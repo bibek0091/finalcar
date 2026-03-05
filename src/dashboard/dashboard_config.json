@@ -1,0 +1,1 @@
+{"base_speed": 200, "sim_speed": 2.1, "steer_mult": 1.2, "lookahead": 150, "lanewidth": 280, "offset": 50, "overtake_dist": 0.9, "overtake_time": 2.0, "invert_colors": true}

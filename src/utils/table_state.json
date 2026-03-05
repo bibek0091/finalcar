@@ -1,0 +1,85 @@
+{
+    "ToggleInstant": {
+        "value": "True",
+        "initialValue": "True",
+        "interval": 0,
+        "type": "dropdown",
+        "values": [
+            "True",
+            "False"
+        ],
+        "command": "instant",
+        "checked": true,
+        "hasChanged": false
+    },
+    "ToggleBatteryLvl": {
+        "value": "True",
+        "initialValue": "True",
+        "interval": 0,
+        "type": "dropdown",
+        "values": [
+            "True",
+            "False"
+        ],
+        "command": "battery",
+        "checked": true,
+        "hasChanged": false
+    },
+    "ToggleImuData": {
+        "value": "True",
+        "initialValue": "True",
+        "interval": 0,
+        "type": "dropdown",
+        "values": [
+            "True",
+            "False"
+        ],
+        "command": "imu",
+        "checked": true,
+        "hasChanged": false
+    },
+    "ToggleResourceMonitor": {
+        "value": "True",
+        "initialValue": "True",
+        "interval": 0,
+        "type": "dropdown",
+        "values": [
+            "True",
+            "False"
+        ],
+        "command": "resourceMonitor",
+        "checked": true,
+        "hasChanged": false
+    },
+    "Brightness": {
+        "value": 50,
+        "initialValue": 50,
+        "interval": 0,
+        "type": "slider",
+        "values": [
+            0,
+            100
+        ],
+        "checked": false,
+        "hasChanged": false
+    },
+    "Contrast": {
+        "value": 0,
+        "initialValue": 0,
+        "interval": 0,
+        "type": "slider",
+        "values": [
+            0,
+            3200
+        ],
+        "checked": false,
+        "hasChanged": false
+    },
+    "init": {
+        "type": "Config",
+        "batteryCapacity": {
+            "capacity": 6000
+        },
+        "hasChanged": false
+    }
+}
