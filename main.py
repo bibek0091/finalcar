@@ -20,9 +20,16 @@ logging.basicConfig(level=logging.INFO)
 from src.hardware.camera.processCamera import processCamera
 from src.hardware.serialhandler.processSerialHandler import processSerialHandler
 
-# FIXED: Strict lowercase folder names for Linux
-from src.data.semaphores.processSemaphores import processSemaphores
-from src.data.trafficCommunication.processTrafficCommunication import processTrafficCommunication
+# FIXED: Smart Loader to handle both Uppercase and Lowercase Linux folder variations
+try:
+    from src.data.Semaphores.processSemaphores import processSemaphores
+except ModuleNotFoundError:
+    from src.data.semaphores.processSemaphores import processSemaphores
+
+try:
+    from src.data.TrafficCommunication.processTrafficCommunication import processTrafficCommunication
+except ModuleNotFoundError:
+    from src.data.trafficCommunication.processTrafficCommunication import processTrafficCommunication
 
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.allMessages import StateChange
