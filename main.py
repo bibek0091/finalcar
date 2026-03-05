@@ -20,16 +20,24 @@ logging.basicConfig(level=logging.INFO)
 from src.hardware.camera.processCamera import processCamera
 from src.hardware.serialhandler.processSerialHandler import processSerialHandler
 
-# FIXED: Smart Loader to handle both Uppercase and Lowercase Linux folder variations
+# BULLETPROOF LOADER: If folders are completely missing, don't crash.
 try:
     from src.data.Semaphores.processSemaphores import processSemaphores
 except ModuleNotFoundError:
-    from src.data.semaphores.processSemaphores import processSemaphores
+    try:
+        from src.data.semaphores.processSemaphores import processSemaphores
+    except ModuleNotFoundError:
+        processSemaphores = None
+        logging.error("V2X Semaphores MISSING. Traffic lights disabled!")
 
 try:
     from src.data.TrafficCommunication.processTrafficCommunication import processTrafficCommunication
 except ModuleNotFoundError:
-    from src.data.trafficCommunication.processTrafficCommunication import processTrafficCommunication
+    try:
+        from src.data.trafficCommunication.processTrafficCommunication import processTrafficCommunication
+    except ModuleNotFoundError:
+        processTrafficCommunication = None
+        logging.error("V2X TrafficCommunication MISSING. Telemetry disabled!")
 
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.allMessages import StateChange
@@ -52,6 +60,9 @@ def shutdown_process(process, timeout=1):
 # ===================================== PROCESS MANAGEMENT ==================================
 def manage_process_life(process_class, process_instance, process_args, enabled, allProcesses):
     """Start or stop a process based on the enabled flag (Controlled by BFMC State Machine)."""
+    if process_class is None:
+        return None  # Fail gracefully if module is missing
+        
     if enabled:
         if process_instance is None:
             process_instance = process_class(*process_args)
@@ -96,22 +107,35 @@ StateMachine.initialize_shared_state(queueList)
 # Initializing camera
 camera_ready = Event()
 processCamera_inst = processCamera(queueList, logging, camera_ready, debugging=False)
+allProcesses.append(processCamera_inst)
+allEvents.append(camera_ready)
 
 # Initializing semaphores (UDP Traffic Lights)
 semaphore_ready = Event()
-processSemaphore_inst = processSemaphores(queueList, logging, semaphore_ready, debugging=False)
+if processSemaphores is not None:
+    processSemaphore_inst = processSemaphores(queueList, logging, semaphore_ready, debugging=False)
+    allProcesses.append(processSemaphore_inst)
+else:
+    processSemaphore_inst = None
+    semaphore_ready.set() # Fake ready to prevent deadlock
+allEvents.append(semaphore_ready)
 
 # Initializing Traffic Communication (TCP LiveTraffic - The '3' is your Car ID)
 traffic_com_ready = Event()
-processTrafficCom_inst = processTrafficCommunication(queueList, logging, 3, traffic_com_ready, debugging=False)
+if processTrafficCommunication is not None:
+    processTrafficCom_inst = processTrafficCommunication(queueList, logging, 3, traffic_com_ready, debugging=False)
+    allProcesses.append(processTrafficCom_inst)
+else:
+    processTrafficCom_inst = None
+    traffic_com_ready.set() # Fake ready to prevent deadlock
+allEvents.append(traffic_com_ready)
 
 # Initializing serial connection NUCLEO -> PI
 serial_handler_ready = Event()
 processSerialHandler_inst = processSerialHandler(queueList, logging, serial_handler_ready, debugging=False)
+allProcesses.append(processSerialHandler_inst)
+allEvents.append(serial_handler_ready)
 
-# Adding hardware processes to the list
-allProcesses.extend([processCamera_inst, processSemaphore_inst, processTrafficCom_inst, processSerialHandler_inst])
-allEvents.extend([camera_ready, semaphore_ready, traffic_com_ready, serial_handler_ready])
 
 # ===================================== INITIALIZE OUR CUSTOM STACK =====================
 
