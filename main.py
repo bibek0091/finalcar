@@ -1,12 +1,10 @@
-
 # ===================================== GENERAL IMPORTS ==================================
-
 import sys
 import time
 import os
 import psutil
 
-# Pin to CPU cores 0–3
+# Pin to CPU cores 0–3 to maximize Raspberry Pi performance
 available_cores = list(range(psutil.cpu_count()))
 psutil.Process(os.getpid()).cpu_affinity(available_cores)
 
@@ -15,23 +13,23 @@ from multiprocessing import Queue, Event
 from src.utils.bigPrintMessages import BigPrint
 from src.utils.outputWriters import QueueWriter, MultiWriter
 import logging
-import logging.handlers
 
 logging.basicConfig(level=logging.INFO)
 
 # ===================================== PROCESS IMPORTS ==================================
-
 from src.hardware.camera.processCamera import processCamera
 from src.hardware.serialhandler.processSerialHandler import processSerialHandler
-from src.data.Semaphores.processSemaphores import processSemaphores
-from src.data.TrafficCommunication.processTrafficCommunication import processTrafficCommunication
+
+# FIXED: Strict lowercase folder names for Linux
+from src.data.semaphores.processSemaphores import processSemaphores
+from src.data.trafficCommunication.processTrafficCommunication import processTrafficCommunication
+
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.allMessages import StateChange
 from src.statemachine.stateMachine import StateMachine
 from src.statemachine.systemMode import SystemMode
 
 # ===================================== SHUTDOWN PROCESS ====================================
-
 def shutdown_process(process, timeout=1):
     """Helper function to gracefully shutdown a process."""
     process.join(timeout)
@@ -45,9 +43,8 @@ def shutdown_process(process, timeout=1):
     print(f"The process {process} stopped")
 
 # ===================================== PROCESS MANAGEMENT ==================================
-
 def manage_process_life(process_class, process_instance, process_args, enabled, allProcesses):
-    """Start or stop a process based on the enabled flag."""
+    """Start or stop a process based on the enabled flag (Controlled by BFMC State Machine)."""
     if enabled:
         if process_instance is None:
             process_instance = process_class(*process_args)
@@ -61,7 +58,6 @@ def manage_process_life(process_class, process_instance, process_args, enabled, 
     return process_instance 
 
 # ======================================== SETTING UP ====================================
-
 print(BigPrint.PLEASE_WAIT.value)
 allProcesses = list()
 allEvents = list()
@@ -72,6 +68,8 @@ queueList = {
     "General": Queue(),
     "Config": Queue(),
     "Log": Queue(),
+    "Vision": Queue(),       # Custom: Used by our YOLO script
+    "Autonomous": Queue()    # Custom: Used by our Brain script
 }
 logging = logging.getLogger()
 
@@ -83,35 +81,34 @@ sys.stdout = MultiWriter(original_stdout, queue_writer)
 sys.stderr = MultiWriter(original_stderr, queue_writer)
 
 # ===================================== INITIALIZE ==================================
-
 stateChangeSubscriber = messageHandlerSubscriber(queueList, StateChange, "lastOnly", True)
 StateMachine.initialize_shared_state(queueList)
 
-# ===================================== INITIALIZE PROCESSES ==================================
+# ===================================== INITIALIZE HARDWARE & V2X =======================
 
 # Initializing camera
 camera_ready = Event()
-processCamera = processCamera(queueList, logging, camera_ready, debugging = False)
+processCamera_inst = processCamera(queueList, logging, camera_ready, debugging=False)
 
-# Initializing semaphores
+# Initializing semaphores (UDP Traffic Lights)
 semaphore_ready = Event()
-processSemaphore = processSemaphores(queueList, logging, semaphore_ready, debugging = False)
+processSemaphore_inst = processSemaphores(queueList, logging, semaphore_ready, debugging=False)
 
-# Initializing GPS
+# Initializing Traffic Communication (TCP LiveTraffic - The '3' is your Car ID)
 traffic_com_ready = Event()
-processTrafficCom = processTrafficCommunication(queueList, logging, 3, traffic_com_ready, debugging = False)
+processTrafficCom_inst = processTrafficCommunication(queueList, logging, 3, traffic_com_ready, debugging=False)
 
 # Initializing serial connection NUCLEO -> PI
 serial_handler_ready = Event()
-processSerialHandler = processSerialHandler(queueList, logging, serial_handler_ready, debugging = False)
+processSerialHandler_inst = processSerialHandler(queueList, logging, serial_handler_ready, debugging=False)
 
-# Adding all processes to the list
-allProcesses.extend([processCamera, processSemaphore, processTrafficCom, processSerialHandler])
+# Adding hardware processes to the list
+allProcesses.extend([processCamera_inst, processSemaphore_inst, processTrafficCom_inst, processSerialHandler_inst])
 allEvents.extend([camera_ready, semaphore_ready, traffic_com_ready, serial_handler_ready])
 
-# ===================================== START PROCESSES ==================================
+# ===================================== INITIALIZE OUR CUSTOM STACK =====================
 
-# 1. Start the Gateway (WebSockets for Telemetry)
+# 1. Start the Gateway (WebSockets for Telemetry to Dashboard)
 try:
     from src.gateway.processGateway import processGateway
     gateway_process = processGateway(queueList, logging)
@@ -132,12 +129,7 @@ from src.autonomous.threads.processAutonomous import processAutonomous
 autonomous_process = processAutonomous(queueList, logging)
 allProcesses.append(autonomous_process)
 
-# 4. DASHBOARD DISABLED (Frontend folder is missing)
-# from src.dashboard.processDashboard import processDashboard
-# dashboard_process = processDashboard(queueList, logging)
-# allProcesses.append(dashboard_process)
-
-# Start all processes
+# Start all processes initially
 for process in allProcesses:
     process.daemon = True
     process.start()
@@ -146,7 +138,7 @@ for process in allProcesses:
 
 blocker = Event()
 try:
-    # wait for all events to be set
+    # wait for all hardware events to be set (Camera, Serial, etc.)
     for event in allEvents:
         event.wait()
 
@@ -163,8 +155,8 @@ try:
             modeDictSemaphore = SystemMode[message].value["semaphore"]["process"]
             modeDictTrafficCom = SystemMode[message].value["traffic_com"]["process"]
 
-            processSemaphore = manage_process_life(processSemaphores, processSemaphore, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
-            processTrafficCom = manage_process_life(processTrafficCommunication, processTrafficCom, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
+            processSemaphore_inst = manage_process_life(processSemaphores, processSemaphore_inst, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
+            processTrafficCom_inst = manage_process_life(processTrafficCommunication, processTrafficCom_inst, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
 
         blocker.wait(0.1)
 
