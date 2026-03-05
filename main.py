@@ -4,6 +4,9 @@ import time
 import os
 import psutil
 
+# Automatically create the 'temp' directory if it's missing to prevent FileNotFoundError
+os.makedirs("temp", exist_ok=True)
+
 # Pin to CPU cores 0–3 to maximize Raspberry Pi performance
 available_cores = list(range(psutil.cpu_count()))
 psutil.Process(os.getpid()).cpu_affinity(available_cores)
