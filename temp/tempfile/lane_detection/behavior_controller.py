@@ -303,15 +303,22 @@ class BehaviorController:
     # ── Priority 0: Emergency ────────────────────────────────────────────────
 
     def _check_emergency(self, t_res, base_steer: float) -> Optional[BehaviorOutput]:
-        """Pedestrian on road → immediate stop regardless of anything else."""
-        if not t_res.pedestrian_blocking:
+        """Pedestrian on road or collision → immediate stop regardless of anything else."""
+        is_emergency = t_res.pedestrian_blocking or "PEDESTRIAN" in t_res.reason.upper() or "COLLISION" in t_res.reason.upper()
+        
+        if not is_emergency:
             return None
+            
+        reason_str = t_res.reason if t_res.reason else "EMERGENCY HAZARD"
+        if t_res.pedestrian_blocking and not ("PEDESTRIAN" in reason_str.upper() or "COLLISION" in reason_str.upper()):
+            reason_str = "PEDESTRIAN AT CROSSWALK"
+            
         return BehaviorOutput(
             speed_pwm = 0.0,
             steer_deg = base_steer,
             priority  = self.PRI_EMERGENCY,
             state     = "EMERGENCY_STOP",
-            reason    = "PEDESTRIAN ON ROAD",
+            reason    = reason_str,
         )
 
     # ── Priority 1: Mandatory ────────────────────────────────────────────────
