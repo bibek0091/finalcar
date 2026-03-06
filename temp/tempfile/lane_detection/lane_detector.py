@@ -77,7 +77,8 @@ class LaneDetector:
 
     def process(self, raw_frame, dt: float = 0.033, extra_offset_px=0.0,
                 nav_state="NORMAL", velocity_ms=0.0, last_steering=0.0,
-                upcoming_curve: str = "STRAIGHT", pitch_rad: float = 0.0) -> LaneResult:
+                upcoming_curve: str = "STRAIGHT", pitch_rad: float = 0.0,
+                current_yaw: float = 0.0) -> LaneResult:
         if raw_frame.shape[:2] != (480, 640):
             process_frame = cv2.resize(raw_frame, (640, 480))
         else:
@@ -115,7 +116,7 @@ class LaneDetector:
         
         target_x, anchor = self.tracker.get_target_x(
             y_eval, lw, extra_offset_px, nav_state, self.lost_frames,
-            velocity_ms, last_steering
+            velocity_ms, last_steering, current_yaw
         )
         if not hasattr(self, "_target_ema"):
             self._target_ema = target_x
@@ -127,7 +128,7 @@ class LaneDetector:
         
         if target_x is None:
             self.lost_frames += 1
-            self.tracker.dead_reckoner.accumulate(dt)
+            self.tracker.dead_reckoner.accumulate(dt, current_yaw)
             target_x = self.last_target_x
         else:
             self.lost_frames = 0

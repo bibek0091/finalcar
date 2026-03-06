@@ -6,21 +6,36 @@ class DeadReckoningNavigator:
         self.last_valid_target    = 320.0
         self.last_valid_curvature = 0.0
         self._lost_time_s         = 0.0
+        self.yaw_at_loss          = 0.0
+        self.is_lost              = False
 
-    def reset_lost_timer(self):
+    def reset_lost_timer(self, current_yaw: float):
         self._lost_time_s = 0.0
+        self.yaw_at_loss  = current_yaw
+        self.is_lost      = False
 
-    def accumulate(self, dt: float):
+    def accumulate(self, dt: float, current_yaw: float):
+        if not self.is_lost:
+            self.yaw_at_loss = current_yaw
+            self.is_lost = True
         self._lost_time_s += dt
 
-    def predict_target(self, last_speed, last_steering):
+    def predict_target(self, last_speed, last_steering, current_yaw):
         t = max(0.0, self._lost_time_s)
-        lateral_drift   = last_steering * 2.0 * t  # Approximation
-        predicted_target = self.last_valid_target + lateral_drift
-        if abs(self.last_valid_curvature) > 0.001:
-            predicted_target += self.last_valid_curvature * 5000 * t
+        delta_yaw_deg = current_yaw - self.yaw_at_loss
+
+        if abs(self.last_valid_curvature) > 0.0015 or abs(last_steering) > 5.0:
+            # Curved road - use the last known target and steering to navigate the bend
+            # We hold the steering through the curve using the previous optimal track positioning
+            predicted_target = self.last_valid_target
+            confidence = max(0.0, 1.0 - t / 3.0) # Decay over 3s on curve
+        else:
+            # Straight road - force target to centre to go straight
+            # If IMU indicates drift, counteract it heavily!
+            predicted_target = 320.0 + (delta_yaw_deg * 20.0) 
+            confidence = max(0.0, 1.0 - t / 5.0) # Decay over 5s on straight
+
         predicted_target = float(np.clip(predicted_target, 150, 490))
-        confidence       = max(0.0, 1.0 - t / 2.0)
         return predicted_target, confidence
 
 class HybridLaneTracker:
@@ -36,7 +51,7 @@ class HybridLaneTracker:
 
     WIDE_ROAD_PX             = 420
     SINGLE_LANE_PX           = 200
-    RIGHT_LANE_BIAS_PX       = 0
+    RIGHT_LANE_BIAS_PX       = 25   # Shift target 25 pixels closer to the right edge
     DIVIDER_FOLLOW_OFFSET_PX = 90
 
     def __init__(self, img_shape=(480, 640)):
@@ -112,7 +127,7 @@ class HybridLaneTracker:
 
     def get_target_x(self, y_eval, lane_width_px, extra_offset_px=0,
                      nav_state="NORMAL", frames_lost=0,
-                     last_speed=0.0, last_steering=0.0):
+                     last_speed=0.0, last_steering=0.0, current_yaw=0.0):
         sl, sr = self.sl, self.sr
         hw = lane_width_px / 2.0
         def ev(fit): return float(np.polyval(fit, y_eval))
@@ -137,7 +152,7 @@ class HybridLaneTracker:
         has_left  = (sl is not None)
 
         if not has_right and not has_left:
-            predicted_x, conf = self.dead_reckoner.predict_target(last_speed, last_steering)
+            predicted_x, conf = self.dead_reckoner.predict_target(last_speed, last_steering, current_yaw)
             return predicted_x + extra_offset_px, f"DEAD_RECKONING_{conf:.2f}"
 
         if has_right:
@@ -157,7 +172,7 @@ class HybridLaneTracker:
 
         self.dead_reckoner.last_valid_target    = base_x
         self.dead_reckoner.last_valid_curvature = self.get_curvature(y_eval)
-        self.dead_reckoner.reset_lost_timer()
+        self.dead_reckoner.reset_lost_timer(current_yaw)
         return base_x + extra_offset_px, anchor
 
     def get_curvature(self, y_eval):

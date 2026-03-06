@@ -5,6 +5,7 @@ from lane_detection.camera import Camera
 from lane_detection.lane_detector import LaneDetector
 from lane_detection.controller import Controller
 from hardware.serial_handler import STM32_SerialHandler
+from hardware.imu_sensor import IMUSensor
 
 def annotate_bev(lane_result, control_output):
     dbg = lane_result.lane_dbg.copy()
@@ -67,6 +68,10 @@ def main():
     
     # Steering Model
     controller = Controller()
+    
+    # IMU Hardware Integration
+    imu = IMUSensor()
+    imu.start()
 
     print("[SYS] Pipeline ready. Press 'q' in the view window to exit.")
     
@@ -91,7 +96,8 @@ def main():
             last_time = now
 
             # 2. Process frame for Lane Detection
-            lane_result = detector.process(frame, dt=dt, velocity_ms=0.5, last_steering=last_steer)
+            current_yaw = imu.get_yaw()
+            lane_result = detector.process(frame, dt=dt, velocity_ms=0.5, last_steering=last_steer, current_yaw=current_yaw)
             
             # 3. Calculate Steering & Speed Control
             # Assuming ~0.0 velocity_ms for now as encoder feedback is detached without IMU
@@ -129,6 +135,7 @@ def main():
         print("Interrupted by user.")
     finally:
         print("Cleaning up hardware connections...")
+        imu.stop()
         serial_handler.disconnect()
         camera.stop()
         cv2.destroyAllWindows()
