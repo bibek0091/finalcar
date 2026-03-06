@@ -1,10 +1,12 @@
 """
-BFMC Hybrid Pilot - Hardware Version
-================================================
-Modifications:
-  - FIX: Absolute path import to guarantee serial_handler.py is found if it's in the same folder.
-  - REMOVED: Simulation mode entirely. The script now enforces hardware execution.
-  - FIX: OpenCV Trackbars explicitly set to default values to prevent "Base Speed = 0" bugs.
+BFMC Hybrid Pilot - Hardware Version (CENTER LANE DRIVING)
+==========================================================
+Modifications included:
+  - CENTER TRACKING: Target offsets zeroed out to track the dead center.
+  - AGGRESSIVE GUARD: DividerGuard margins increased to 120px on both sides to squeeze the car into the absolute middle.
+  - HARDWARE ONLY: Simulation mode removed. Fails safely if STM32 or Camera is missing.
+  - PATH FIX: Forces Python to look in the exact same directory for serial_handler.py.
+  - CALIBRATION: 5-second auto-exposure warmup added on boot.
 """
 
 import cv2
@@ -54,13 +56,12 @@ SRC_PTS = np.float32([[200, 260], [440, 260], [40,  450], [600, 450]])
 DST_PTS = np.float32([[150,   0], [490,   0], [150, 480], [490, 480]])
 
 # ===========================================================================
-# RIGHT-LANE OFFSET
+# CENTER-LANE OFFSETS
 # Target pixel = image_centre + RIGHT_LANE_OFFSET_PX
+# Set to 0 to target the absolute middle of the lane.
 # ===========================================================================
-RIGHT_LANE_OFFSET_PX = 30  
-
-# Offset applied only in DUAL mode (both lines found).
-DUAL_OFFSET_PX = -10 
+RIGHT_LANE_OFFSET_PX = 0  
+DUAL_OFFSET_PX       = 0 
 
 # ===========================================================================
 # TIMING
@@ -172,17 +173,17 @@ class HybridLaneTracker:
             if sl is not None: return ev(sl) + hw + extra_offset_px, "JCT_DIV"
             return None, "JCT_LOST"
 
-        # NORMAL right-lane driving
+        # NORMAL center-lane driving
         if sl is not None and sr is not None:
-            return (ev(sl) + ev(sr)) / 2.0 + DUAL_OFFSET_PX, "DUAL"
+            return (ev(sl) + ev(sr)) / 2.0 + DUAL_OFFSET_PX + extra_offset_px, "DUAL"
 
         # Ghost-line extrapolation
         if sr is not None and sl is None:
             ghost_sl = sr - np.array([0.0, 0.0, float(lane_width_px)])
-            return (ev(ghost_sl) + ev(sr)) / 2.0 + DUAL_OFFSET_PX, "GHOST_L"
+            return (ev(ghost_sl) + ev(sr)) / 2.0 + DUAL_OFFSET_PX + extra_offset_px, "GHOST_L"
         if sl is not None and sr is None:
             ghost_sr = sl + np.array([0.0, 0.0, float(lane_width_px)])
-            return (ev(sl) + ev(ghost_sr)) / 2.0 + DUAL_OFFSET_PX, "GHOST_R"
+            return (ev(sl) + ev(ghost_sr)) / 2.0 + DUAL_OFFSET_PX + extra_offset_px, "GHOST_R"
 
         return None, "LOST"
 
@@ -364,10 +365,10 @@ class RoundaboutNavigator:
 # ===========================================================================
 class DividerGuard:
 
-    DIVIDER_SAFE_PX = 55    # min gap: car centre → centre divider
-    EDGE_SAFE_PX    = 75    # Keep further away from right outer edge
-    GAIN            = 0.09  
-    MAX_CORR        = 8.0   
+    DIVIDER_SAFE_PX = 120   # INCREASED: Squeezes car tighter into the exact middle
+    EDGE_SAFE_PX    = 120   # INCREASED: Squeezes car tighter into the exact middle
+    GAIN            = 0.15  # INCREASED: Stronger shove to the center
+    MAX_CORR        = 20.0  # INCREASED: Allows steeper angle to recover to center
     DEADBAND_PX     = 5
 
     def apply(self, steer_angle, left_fit, right_fit, y_eval=440, car_x=320):
@@ -550,7 +551,7 @@ class BFMC_Pilot:
     # MAIN LOOP
     # ------------------------------------------------------------------
     def run(self):
-        print("BFMC Pilot v2: STARTING — RIGHT LANE DRIVING MODE (HARDWARE)")
+        print("BFMC Pilot v2: STARTING — CENTER LANE DRIVING MODE (HARDWARE)")
         
         self.calibrate()
 
