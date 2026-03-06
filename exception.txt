@@ -1,0 +1,31 @@
+Traceback (most recent call last):
+  File "C:\Users\p23mi\Documents\final_bfmc_stack\test_yolo_direct.py", line 22, in <module>
+    model = YOLO(os.path.abspath(model_path))
+  File "C:\Users\p23mi\AppData\Local\Programs\Python\Python314\Lib\site-packages\ultralytics\models\yolo\model.py", line 23, in __init__
+    super().__init__(model=model, task=task, verbose=verbose)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\p23mi\AppData\Local\Programs\Python\Python314\Lib\site-packages\ultralytics\engine\model.py", line 151, in __init__
+    self._load(model, task=task)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\p23mi\AppData\Local\Programs\Python\Python314\Lib\site-packages\ultralytics\engine\model.py", line 240, in _load
+    self.model, self.ckpt = attempt_load_one_weight(weights)
+                            ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "C:\Users\p23mi\AppData\Local\Programs\Python\Python314\Lib\site-packages\ultralytics\nn\tasks.py", line 806, in attempt_load_one_weight
+    ckpt, weight = torch_safe_load(weight)  # load ckpt
+                   ~~~~~~~~~~~~~~~^^^^^^^^
+  File "C:\Users\p23mi\AppData\Local\Programs\Python\Python314\Lib\site-packages\ultralytics\nn\tasks.py", line 732, in torch_safe_load
+    ckpt = torch.load(file, map_location="cpu")
+  File "C:\Users\p23mi\Documents\final_bfmc_stack\test_yolo_direct.py", line 18, in _patched
+    return _orig(*args, **kwargs)
+  File "C:\Users\p23mi\AppData\Local\Programs\Python\Python314\Lib\site-packages\torch\serialization.py", line 1549, in load
+    return _load(
+        opened_zipfile,
+    ...<3 lines>...
+        **pickle_load_args,
+    )
+  File "C:\Users\p23mi\AppData\Local\Programs\Python\Python314\Lib\site-packages\torch\serialization.py", line 2143, in _load
+    result = unpickler.load()
+  File "C:\Users\p23mi\AppData\Local\Programs\Python\Python314\Lib\site-packages\torch\serialization.py", line 2132, in find_class
+    return super().find_class(mod_name, name)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+AttributeError: module 'ultralytics.nn.modules.block' has no attribute 'C3k2'

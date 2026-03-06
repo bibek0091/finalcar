@@ -1,6 +1,7 @@
 import cv2
 import time
 import numpy as np
+import argparse
 from lane_detection.camera import Camera
 from lane_detection.lane_detector import LaneDetector
 from lane_detection.controller import Controller
@@ -66,7 +67,14 @@ def annotate_bev(lane_result, control_output, t_res=None, behav_out=None):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="BFMC Tempfile Stack for Raspberry Pi")
+    parser.add_argument("--headless", action="store_true", help="Run without UI displays (avoids X11 crashes on headless Pi)")
+    parser.add_argument("--model", type=str, default="temp/tempfile/lane_detection/lane_detection/best.pt", help="Path to YOLO model (e.g. best.onnx for Pi speedup)")
+    args = parser.parse_args()
+
     print("\n--- Initializing Autonomous Lane Follower ---")
+    if args.headless:
+        print("[SYS] Running in HEADLESS mode (No GUI windows will be shown).")
     
     # Hardware/Serial (STM32 connection)
     serial_handler = STM32_SerialHandler()
@@ -88,7 +96,7 @@ def main():
     
     # Traffic Semantics & Rule Engine
     try:
-        yolo_detector = ThreadedYOLODetector("temp/tempfile/lane_detection/lane_detection/best.pt")
+        yolo_detector = ThreadedYOLODetector(args.model)
         traffic_engine = TrafficDecisionEngine(yolo_detector)
         behavior = BehaviorController()
         print("[SYS] YOLOv11 and BFMC Semantic Rule Engine loaded.")
@@ -167,20 +175,22 @@ def main():
                 control_output.speed_pwm = 0.0
 
             # 6. Display the results
-            cv2.imshow("Lane Detection (BEV)", bev_image)
-            if t_res and t_res.yolo_debug_frame is not None:
-                cv2.imshow("Raw Camera", cv2.resize(t_res.yolo_debug_frame, (640, 480)))
-            else:
-                cv2.imshow("Raw Camera", cv2.resize(frame, (640, 480)))
+            if not args.headless:
+                cv2.imshow("Lane Detection (BEV)", bev_image)
+                if t_res and t_res.yolo_debug_frame is not None:
+                    cv2.imshow("Raw Camera", cv2.resize(t_res.yolo_debug_frame, (640, 480)))
+                else:
+                    cv2.imshow("Raw Camera", cv2.resize(frame, (640, 480)))
             
             # Pacing
             elapsed = time.time() - now
             sleep_time = max(0.001, frame_period - elapsed)
             time.sleep(sleep_time)
             
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
+            if not args.headless:
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
 
     except KeyboardInterrupt:
         print("Interrupted by user.")
