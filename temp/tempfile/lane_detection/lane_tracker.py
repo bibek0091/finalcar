@@ -30,8 +30,8 @@ class HybridLaneTracker:
     POLY_MARGIN_BASE = 60
     POLY_MARGIN_CURV = 120
     MIN_PIX_OK       = 200
-    EMA_ALPHA        = 0.55
-    EMA_ALPHA_TURN   = 0.75
+    EMA_ALPHA        = 0.85
+    EMA_ALPHA_TURN   = 1.0
     STALE_FIT_FRAMES = 12
 
     WIDE_ROAD_PX             = 420

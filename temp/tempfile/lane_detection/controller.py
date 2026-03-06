@@ -70,15 +70,15 @@ class DividerGuard:
         return steer_angle + correction, speed_scale, triggered
 
 class Controller:
-    MAX_STEER      = 25.0
-    MAX_STEER_RATE = 40.0
+    MAX_STEER      = 30.0
+    MAX_STEER_RATE = 60.0
     BRAKING_DISTANCE_M = 1.8
     MIN_CURVE_SPEED_F  = 0.45
 
     def __init__(self):
         self.prev_steer = 0.0
         self.guard      = DividerGuard()
-        self.stanley    = StanleyController(k=2.5, ks=0.1, wheelbase_m=0.23)
+        self.stanley    = StanleyController(k=3.5, ks=0.05, wheelbase_m=0.23)
 
     def compute(self, perc_res,
                 nav_state:      str   = "NORMAL",
@@ -99,7 +99,8 @@ class Controller:
                   min(self.MAX_STEER_RATE, raw_steer - self.prev_steer))
         steer_angle = self.prev_steer + rate_delta
 
-        alpha = 0.7
+        # Disable mechanical steering lag for maximum aggressiveness
+        alpha = 0.0
         steer_angle = alpha * self.prev_steer + (1 - alpha) * steer_angle
         self.prev_steer = steer_angle
 
