@@ -36,7 +36,7 @@ class LaneDetector:
         sl, sr, lane_dbg, mode_label = self.tracker.update(warped_binary)
         
         # 4. Target Calculation
-        y_eval = 400.0
+        y_eval = 320.0
         lw = self.tracker.estimated_lane_width
         
         target_x, anchor = self.tracker.get_target_x(y_eval, lw)
@@ -48,7 +48,7 @@ class LaneDetector:
         else:
             self.lost_frames = 0
             delta = abs(target_x - self._target_ema)
-            alpha = 0.6 if delta > 15.0 else 0.3
+            alpha = 1.0 if delta > 5.0 else 0.8
             self._target_ema = (1.0 - alpha) * self._target_ema + alpha * target_x
             target_x = self._target_ema
             self.last_target_x = target_x

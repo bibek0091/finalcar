@@ -94,7 +94,7 @@ def main():
             
             # 3. Calculate Steering & Speed Control
             # Assuming ~0.0 velocity_ms for now as encoder feedback is detached without IMU
-            control_output = controller.compute(lane_result, velocity_ms=0.3, base_speed=35.0)
+            control_output = controller.compute(lane_result, velocity_ms=0.5, base_speed=50.0)
             
             # 4. Dispatch Hardware Commands
             if serial_handler.running:

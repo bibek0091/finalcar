@@ -58,12 +58,12 @@ class DividerGuard:
 
 class Controller:
     MAX_STEER      = 25.0
-    MAX_STEER_RATE = 20.0
+    MAX_STEER_RATE = 40.0
 
     def __init__(self):
         self.prev_steer = 0.0
         self.guard      = DividerGuard()
-        self.stanley    = StanleyController(k=1.2, ks=0.2, wheelbase_m=0.23)
+        self.stanley    = StanleyController(k=2.5, ks=0.1, wheelbase_m=0.23)
 
     def compute(self, lane_result, velocity_ms: float = 0.0, base_speed: float = 50.0) -> ControlOutput:
         
