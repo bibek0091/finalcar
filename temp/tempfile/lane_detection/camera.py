@@ -33,10 +33,9 @@ class Camera:
                 cfg = self.camera.create_video_configuration(
                     main={"size": (1280, 720), "format": "XRGB8888"},
                     controls={
-                        "AwbEnable":   False,
-                        "ColourGains": (3.5, 1.2),
+                        "AwbEnable":   True,
                         "AeEnable":    True,
-                        "Saturation":  1.4,
+                        "Saturation":  1.2,
                         "Sharpness":   1.2,
                     }
                 )
