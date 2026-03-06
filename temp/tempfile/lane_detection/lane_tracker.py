@@ -13,7 +13,7 @@ class DeadReckoningNavigator:
     def accumulate(self, dt: float):
         self._lost_time_s += dt
 
-    def predict_target(self, last_speed=0.0, last_steering=0.0):
+    def predict_target(self, last_speed, last_steering):
         t = max(0.0, self._lost_time_s)
         lateral_drift   = last_steering * 2.0 * t  # Approximation
         predicted_target = self.last_valid_target + lateral_drift
@@ -53,17 +53,17 @@ class HybridLaneTracker:
         self.dead_reckoner = DeadReckoningNavigator()
         self.estimated_lane_width = 280.0
 
-    def update(self, warped_binary):
+    def update(self, warped_binary, map_hint: str = "STRAIGHT"):
         nz  = warped_binary.nonzero()
         nzy = np.array(nz[0])
         nzx = np.array(nz[1])
 
         if self.mode == "TRACKING" and (self.sl is not None or self.sr is not None):
             curv = self.get_curvature(self.h // 2)
-            li, ri, dbg = self._poly_search(warped_binary, nzx, nzy, curvature=curv)
+            li, ri, dbg = self._poly_search(warped_binary, nzx, nzy, curvature=curv, map_hint=map_hint)
             mode_label  = "POLY"
         else:
-            li, ri, dbg = self._sliding_window(warped_binary, nzx, nzy)
+            li, ri, dbg = self._sliding_window(warped_binary, nzx, nzy, map_hint=map_hint)
             mode_label  = "SLIDE"
 
         self.left_conf  = len(li)
@@ -110,11 +110,28 @@ class HybridLaneTracker:
         self.mode = "TRACKING" if (has_l or has_r or self.sl is not None or self.sr is not None) else "SEARCH"
         return self.sl, self.sr, dbg, mode_label
 
-    def get_target_x(self, y_eval, lane_width_px, extra_offset_px=0, last_speed=0.0, last_steering=0.0):
+    def get_target_x(self, y_eval, lane_width_px, extra_offset_px=0,
+                     nav_state="NORMAL", frames_lost=0,
+                     last_speed=0.0, last_steering=0.0):
         sl, sr = self.sl, self.sr
         hw = lane_width_px / 2.0
-
         def ev(fit): return float(np.polyval(fit, y_eval))
+
+        if nav_state == "ROUNDABOUT":
+            if sl is not None: return ev(sl) + hw + extra_offset_px, "RBT_INNER"
+            if sr is not None: return ev(sr) - hw + extra_offset_px, "RBT_OUTER"
+            return None, "RBT_LOST"
+
+        if nav_state.startswith("JUNCTION"):
+            if nav_state == "JUNCTION_RIGHT":
+                if sr is not None: return ev(sr) - (lane_width_px * 0.40) + extra_offset_px, "JCT_RIGHT_EDGE"
+                elif sl is not None: return ev(sl) + (lane_width_px * 1.5) + extra_offset_px, "JCT_RIGHT_GHOST"
+                else: return 320.0 + (lane_width_px * 0.8) + extra_offset_px, "JCT_RIGHT_BLIND"
+            elif nav_state == "JUNCTION_LEFT":
+                if sl is not None: return ev(sl) + (lane_width_px * 0.40) + extra_offset_px, "JCT_LEFT_EDGE"
+                elif sr is not None: return ev(sr) - (lane_width_px * 1.5) + extra_offset_px, "JCT_LEFT_GHOST"
+                else: return 320.0 - (lane_width_px * 0.8) + extra_offset_px, "JCT_LEFT_BLIND"
+            return 320.0 + extra_offset_px, "JCT_WAITING_CHOICE"
 
         has_right = (sr is not None)
         has_left  = (sl is not None)
@@ -123,16 +140,20 @@ class HybridLaneTracker:
             predicted_x, conf = self.dead_reckoner.predict_target(last_speed, last_steering)
             return predicted_x + extra_offset_px, f"DEAD_RECKONING_{conf:.2f}"
 
-        if has_left:
-            # Maintain a safe distance from the lane divider 
-            base_x = ev(sl) + hw
-            if has_right:
-                anchor = "DIVIDER_AND_EDGE"
+        if has_right:
+            if has_left:
+                if lane_width_px >= self.WIDE_ROAD_PX:
+                    base_x = (ev(sl) + ev(sr)) / 2.0 + self.RIGHT_LANE_BIAS_PX
+                    anchor = "RL_DUAL"
+                else:
+                    base_x = (ev(sl) + ev(sr)) / 2.0 + self.RIGHT_LANE_BIAS_PX
+                    anchor = "RL_DUAL"
             else:
-                anchor = "DIVIDER_ONLY"
-        elif has_right:
-            base_x = ev(sr) - hw
-            anchor = "EDGE_ONLY"
+                base_x = ev(sr) - hw + self.RIGHT_LANE_BIAS_PX
+                anchor = "RL_FROM_EDGE"
+        else:
+            base_x = ev(sl) + self.DIVIDER_FOLLOW_OFFSET_PX
+            anchor = "DIVIDER_FOLLOW"
 
         self.dead_reckoner.last_valid_target    = base_x
         self.dead_reckoner.last_valid_curvature = self.get_curvature(y_eval)
@@ -146,15 +167,19 @@ class HybridLaneTracker:
         denom = (1.0 + (2.0 * a * y_eval + b) ** 2) ** 1.5
         return abs(2.0 * a) / max(denom, 1e-6)
 
-    def _sliding_window(self, warped, nzx, nzy):
+    def _sliding_window(self, warped, nzx, nzy, map_hint: str = "STRAIGHT"):
         dbg  = cv2.cvtColor(warped, cv2.COLOR_GRAY2BGR)
         hist = np.sum(warped[self.h // 2:, :], axis=0)
         mid, margin = int(self.w * 0.40), self.SW_MARGIN
 
-        l_lo = margin
-        l_hi = mid - margin
-        r_lo = mid + margin
-        r_hi = self.w - margin
+        shift = 0
+        if map_hint == "LEFT":  shift = -80
+        elif map_hint == "RIGHT": shift = 80
+
+        l_lo =  max(margin, margin + shift)
+        l_hi =  max(l_lo + 1, mid - margin + shift)
+        r_lo =  max(margin, mid + margin + shift)
+        r_hi =  min(self.w - margin, self.w - margin)   
 
         lb = int(np.argmax(hist[l_lo:l_hi])) + l_lo if l_hi > l_lo else margin
         rb = int(np.argmax(hist[r_lo:r_hi])) + r_lo if r_hi > r_lo else mid + margin
@@ -191,26 +216,24 @@ class HybridLaneTracker:
         if len(ri): dbg[nzy[ri], nzx[ri]] = [80,  80, 255]
         return li, ri, dbg
 
-    def _poly_search(self, warped, nzx, nzy, curvature=0.0):
+    def _poly_search(self, warped, nzx, nzy, curvature=0.0, map_hint: str = "STRAIGHT"):
         dbg = cv2.cvtColor(warped, cv2.COLOR_GRAY2BGR)
         m = (self.POLY_MARGIN_CURV if curvature > 0.0015 else self.POLY_MARGIN_BASE)
 
-        def band(fit): 
-            if fit is None: return np.array([], dtype=int)
-            return ((nzx > np.polyval(fit, nzy) - m) & (nzx < np.polyval(fit, nzy) + m)).nonzero()[0]
-
-        li = band(self.sl)
-        ri = band(self.sr)
+        def band(fit): return ((nzx > np.polyval(fit, nzy) - m) & (nzx < np.polyval(fit, nzy) + m)).nonzero()[0]
+        li = band(self.sl) if self.sl is not None else np.array([], dtype=int)
+        ri = band(self.sr) if self.sr is not None else np.array([], dtype=int)
 
         if len(li) < self.MIN_PIX_OK and len(ri) < self.MIN_PIX_OK:
             self.mode = "SEARCH"
-            return self._sliding_window(warped, nzx, nzy)
+            return self._sliding_window(warped, nzx, nzy, map_hint=map_hint)
 
         if len(li): dbg[nzy[li], nzx[li]] = [255, 80, 80]
         if len(ri): dbg[nzy[ri], nzx[ri]] = [80,  80, 255]
         return li, ri, dbg
 
     def _width_sane(self, lf, rf, y=400):
+        if rf is None or lf is None: return False
         w = np.polyval(rf, y) - np.polyval(lf, y)
         return 180 < w < 420
 

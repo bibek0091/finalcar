@@ -71,6 +71,7 @@ def main():
     print("[SYS] Pipeline ready. Press 'q' in the view window to exit.")
     
     last_time = time.time()
+    last_steer = 0.0
     
     target_fps = 30
     frame_period = 1.0 / target_fps
@@ -90,11 +91,12 @@ def main():
             last_time = now
 
             # 2. Process frame for Lane Detection
-            lane_result = detector.process(frame, dt=dt)
+            lane_result = detector.process(frame, dt=dt, velocity_ms=0.5, last_steering=last_steer)
             
             # 3. Calculate Steering & Speed Control
             # Assuming ~0.0 velocity_ms for now as encoder feedback is detached without IMU
-            control_output = controller.compute(lane_result, velocity_ms=0.5, base_speed=50.0)
+            control_output = controller.compute(lane_result, velocity_ms=0.5, base_speed=50.0, dt=dt)
+            last_steer = control_output.steer_angle_deg
             
             # 4. Dispatch Hardware Commands
             if serial_handler.running:
