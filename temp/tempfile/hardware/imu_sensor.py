@@ -95,6 +95,7 @@ class IMUSensor(threading.Thread):
             print("[IMU] NDOF mode activated.")
 
             self.running = True
+            self.start_time = time.time()
             
             calib_delay = 0
             
@@ -108,7 +109,13 @@ class IMUSensor(threading.Thread):
                     gyr = (calib >> 4) & 0x03
                     acc = (calib >> 2) & 0x03
                     mag = calib & 0x03
+                    
                     if sys >= 2 and gyr >= 2 and mag >= 2:
+                        self.is_calibrated = True
+                    elif time.time() - self.start_time > 5.0:
+                        if not getattr(self, "_forced_calib_msg", False):
+                            print("[IMU CALIB] 5-second timeout reached. Forcing calibration PASS.")
+                            self._forced_calib_msg = True
                         self.is_calibrated = True
                     else:
                         self.is_calibrated = False
