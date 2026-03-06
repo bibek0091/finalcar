@@ -107,7 +107,10 @@ def main():
             # 4. Dispatch Hardware Commands
             if serial_handler.running:
                 # Hardware failsafe logic: stop motors if dead reckoning 
-                if "DEAD_RECKONING" in lane_result.anchor and "0.00" in lane_result.anchor:
+                if not imu.is_calibrated:
+                    serial_handler.set_speed(0)
+                    serial_handler.set_steering(0)
+                elif "DEAD_RECKONING" in lane_result.anchor and "0.00" in lane_result.anchor:
                     serial_handler.set_speed(0)
                     serial_handler.set_steering(0)
                     print("LOST LANES: Motors paused.")
@@ -117,6 +120,9 @@ def main():
             
             # 5. Create Bird's Eye View overlay
             bev_image = annotate_bev(lane_result, control_output)
+            if not imu.is_calibrated:
+                cv2.putText(bev_image, "IMU CALIBRATING - DO NOT DRIVE", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                control_output.speed_pwm = 0.0
 
             # 6. Display the results
             cv2.imshow("Lane Detection (BEV)", bev_image)
