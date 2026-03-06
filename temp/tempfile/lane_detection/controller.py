@@ -57,7 +57,7 @@ class DividerGuard:
         return steer_angle + correction, speed_scale
 
 class Controller:
-    MAX_STEER      = 45.0
+    MAX_STEER      = 25.0
     MAX_STEER_RATE = 20.0
 
     def __init__(self):

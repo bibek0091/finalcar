@@ -47,7 +47,9 @@ class LaneDetector:
             target_x = self.last_target_x
         else:
             self.lost_frames = 0
-            self._target_ema = 0.8 * self._target_ema + 0.2 * target_x
+            delta = abs(target_x - self._target_ema)
+            alpha = 0.6 if delta > 15.0 else 0.3
+            self._target_ema = (1.0 - alpha) * self._target_ema + alpha * target_x
             target_x = self._target_ema
             self.last_target_x = target_x
             

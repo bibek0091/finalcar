@@ -123,16 +123,16 @@ class HybridLaneTracker:
             predicted_x, conf = self.dead_reckoner.predict_target(last_speed, last_steering)
             return predicted_x + extra_offset_px, f"DEAD_RECKONING_{conf:.2f}"
 
-        if has_right:
-            if has_left:
-                base_x = (ev(sl) + ev(sr)) / 2.0 + self.RIGHT_LANE_BIAS_PX
-                anchor = "RL_DUAL"
+        if has_left:
+            # Maintain a safe distance from the lane divider 
+            base_x = ev(sl) + hw
+            if has_right:
+                anchor = "DIVIDER_AND_EDGE"
             else:
-                base_x = ev(sr) - hw + self.RIGHT_LANE_BIAS_PX
-                anchor = "RL_FROM_EDGE"
-        else:
-            base_x = ev(sl) + self.DIVIDER_FOLLOW_OFFSET_PX
-            anchor = "DIVIDER_FOLLOW"
+                anchor = "DIVIDER_ONLY"
+        elif has_right:
+            base_x = ev(sr) - hw
+            anchor = "EDGE_ONLY"
 
         self.dead_reckoner.last_valid_target    = base_x
         self.dead_reckoner.last_valid_curvature = self.get_curvature(y_eval)
