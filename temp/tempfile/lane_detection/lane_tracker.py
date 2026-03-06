@@ -31,8 +31,9 @@ class DeadReckoningNavigator:
             confidence = max(0.0, 1.0 - t / 3.0) # Decay over 3s on curve
         else:
             # Straight road - force target to centre to go straight
-            # If IMU indicates drift, counteract it heavily!
-            predicted_target = 320.0 + (delta_yaw_deg * 20.0) 
+            # If IMU indicates drift, counteract it heavily by pushing the target in the OPPOSITE direction!
+            # Example: If delta_yaw is +5 (Right), target becomes 320 - (5*20) = 220 (Left), forcing Stanley to steer Left!
+            predicted_target = 320.0 - (delta_yaw_deg * 20.0) 
             confidence = max(0.0, 1.0 - t / 5.0) # Decay over 5s on straight
 
         predicted_target = float(np.clip(predicted_target, 150, 490))
@@ -52,7 +53,7 @@ class HybridLaneTracker:
     WIDE_ROAD_PX             = 420
     SINGLE_LANE_PX           = 200
     RIGHT_LANE_BIAS_PX       = 25   # Shift target 25 pixels closer to the right edge
-    DIVIDER_FOLLOW_OFFSET_PX = 90
+    DIVIDER_FOLLOW_OFFSET_PX = 145  # Must be > DIVIDER_SAFE_PX (130) to avoid force-field oscillations
 
     def __init__(self, img_shape=(480, 640)):
         self.h, self.w = img_shape

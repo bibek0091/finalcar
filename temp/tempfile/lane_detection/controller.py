@@ -22,7 +22,10 @@ class StanleyController:
                 velocity_ms: float, lane_width_px: float,
                 map_curvature: float = 0.0):
         ppm  = max(lane_width_px, 50) / 0.35
-        ce_m = (320.0 - target_x_px) / ppm
+        # FATAL BUG FIX: Target - Center ensures that Target on Right (>320) yields Positive error.
+        # Positive error yields Positive steering angle (Right turn). 
+        # This aligns with the DividerGuard math which adds positive values to steer Right.
+        ce_m = (target_x_px - 320.0) / ppm
 
         k_eff = self.k * min(1.0, velocity_ms / 0.25) if velocity_ms > 0 else self.k
         reactive_rad = heading_rad + math.atan2(k_eff * ce_m, velocity_ms + self.ks)
