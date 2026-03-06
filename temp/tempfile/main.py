@@ -6,8 +6,10 @@ from lane_detection.lane_detector import LaneDetector
 from lane_detection.controller import Controller
 from hardware.serial_handler import STM32_SerialHandler
 from hardware.imu_sensor import IMUSensor
+from lane_detection.traffic_module import ThreadedYOLODetector, TrafficDecisionEngine
+from lane_detection.behavior_controller import BehaviorController
 
-def annotate_bev(lane_result, control_output):
+def annotate_bev(lane_result, control_output, t_res=None, behav_out=None):
     dbg = lane_result.lane_dbg.copy()
 
     def draw_poly(fit, color):
@@ -48,6 +50,17 @@ def annotate_bev(lane_result, control_output):
     steer_color = (100,255,100) if abs(control_output.steer_angle_deg)<15 else (100,100,255)
     cv2.putText(dbg, f"STEER: {control_output.steer_angle_deg:+.1f} deg", (420, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, steer_color, 2)
     cv2.putText(dbg, f"SPEED: {control_output.speed_pwm:.0f} PWM", (420, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 100), 2)
+    
+    if t_res is not None and behav_out is not None:
+        cv2.putText(dbg, f"STATE: {behav_out.state}", (420, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+        cv2.putText(dbg, f"ZONE: {behav_out.zone_mode}", (420, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 100, 255), 2)
+        
+        # Draw YOLO detections dynamically onto the BEV window upper-left
+        y_offset = 100
+        cv2.putText(dbg, "YOLO Detections:", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        for label in t_res.active_labels:
+            y_offset += 20
+            cv2.putText(dbg, f"- {label}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
 
     return dbg
 
@@ -72,6 +85,18 @@ def main():
     # IMU Hardware Integration
     imu = IMUSensor()
     imu.start()
+    
+    # Traffic Semantics & Rule Engine
+    try:
+        yolo_detector = ThreadedYOLODetector("temp/tempfile/lane_detection/lane_detection/best.pt")
+        traffic_engine = TrafficDecisionEngine(yolo_detector)
+        behavior = BehaviorController()
+        print("[SYS] YOLOv11 and BFMC Semantic Rule Engine loaded.")
+    except Exception as e:
+        print(f"[SYS] Warning: Failed to load Rule Engine: {e}")
+        yolo_detector = None
+        traffic_engine = None
+        behavior = None
 
     print("[SYS] Pipeline ready. Press 'q' in the view window to exit.")
     
@@ -104,6 +129,23 @@ def main():
             control_output = controller.compute(lane_result, velocity_ms=0.5, base_speed=50.0, dt=dt)
             last_steer = control_output.steer_angle_deg
             
+            # 3.5 Semantic Traffic Overrides
+            t_res = None
+            behav_out = None
+            if traffic_engine and behavior:
+                line_type = getattr(lane_result, 'lane_type', 'UNKNOWN')
+                t_res = traffic_engine.process(frame, line_type)
+                behav_out = behavior.compute(
+                    lane_result, 
+                    t_res, 
+                    dt, 
+                    base_steer=control_output.steer_angle_deg
+                )
+                
+                # Semantic overrides win over raw physics steering
+                control_output.speed_pwm = behav_out.speed_pwm
+                control_output.steer_angle_deg = behav_out.steer_deg
+            
             # 4. Dispatch Hardware Commands
             if serial_handler.running:
                 # Hardware failsafe logic: stop motors if dead reckoning 
@@ -119,14 +161,17 @@ def main():
                     serial_handler.set_steering(control_output.steer_angle_deg)
             
             # 5. Create Bird's Eye View overlay
-            bev_image = annotate_bev(lane_result, control_output)
+            bev_image = annotate_bev(lane_result, control_output, t_res, behav_out)
             if not imu.is_calibrated:
                 cv2.putText(bev_image, "IMU CALIBRATING - DO NOT DRIVE", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                 control_output.speed_pwm = 0.0
 
             # 6. Display the results
             cv2.imshow("Lane Detection (BEV)", bev_image)
-            cv2.imshow("Raw Camera", cv2.resize(frame, (640, 480)))
+            if t_res and t_res.yolo_debug_frame is not None:
+                cv2.imshow("Raw Camera", cv2.resize(t_res.yolo_debug_frame, (640, 480)))
+            else:
+                cv2.imshow("Raw Camera", cv2.resize(frame, (640, 480)))
             
             # Pacing
             elapsed = time.time() - now
@@ -142,6 +187,8 @@ def main():
     finally:
         print("Cleaning up hardware connections...")
         imu.stop()
+        if yolo_detector:
+            yolo_detector.stop()
         serial_handler.disconnect()
         camera.stop()
         cv2.destroyAllWindows()
