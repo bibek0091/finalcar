@@ -7,6 +7,10 @@ Modifications included:
   - HARDWARE ONLY: Simulation mode removed. Fails safely if STM32 or Camera is missing.
   - PATH FIX: Forces Python to look in the exact same directory for serial_handler.py.
   - CALIBRATION: 5-second auto-exposure warmup added on boot.
+  - ZEBRA CROSSING FIX: Used Sobel-X and Vertical Morphology to erase horizontal crosswalk lines.
+  - ADAPTIVE LIGHTING: Dynamically tracks the 95th brightness percentile to handle shadows/dim rooms smoothly.
+  - ADAPTIVE SPEED: Smooth proportional deceleration based on steering angle and curvature.
+  - TRACKBAR DEFAULTS: Updated to proven parameters (Look Ahead=218, Lane Width=356, Fine Offset=28, Base Speed=85).
 """
 
 import cv2
@@ -365,10 +369,10 @@ class RoundaboutNavigator:
 # ===========================================================================
 class DividerGuard:
 
-    DIVIDER_SAFE_PX = 120   # INCREASED: Squeezes car tighter into the exact middle
-    EDGE_SAFE_PX    = 120   # INCREASED: Squeezes car tighter into the exact middle
-    GAIN            = 0.15  # INCREASED: Stronger shove to the center
-    MAX_CORR        = 20.0  # INCREASED: Allows steeper angle to recover to center
+    DIVIDER_SAFE_PX = 120   # Squeezes car tighter into the exact middle
+    EDGE_SAFE_PX    = 120   # Squeezes car tighter into the exact middle
+    GAIN            = 0.15  # Stronger shove to the center
+    MAX_CORR        = 20.0  # Allows steeper angle to recover to center
     DEADBAND_PX     = 5
 
     def apply(self, steer_angle, left_fit, right_fit, y_eval=440, car_x=320):
@@ -455,32 +459,62 @@ class BFMC_Pilot:
 
         # UI window & Trackbars
         cv2.namedWindow("BFMC_v2")
-        cv2.createTrackbar("Look Ahead",    "BFMC_v2", 150, 300, lambda x: None)
-        cv2.createTrackbar("Lane Width PX", "BFMC_v2", 280, 400, lambda x: None)
-        cv2.createTrackbar("Fine Offset",   "BFMC_v2",  50, 100, lambda x: None)
-        cv2.createTrackbar("Base Speed",    "BFMC_v2",  50, 150, lambda x: None)
+        cv2.createTrackbar("Look Ahead",    "BFMC_v2", 218, 300, lambda x: None)
+        cv2.createTrackbar("Lane Width PX", "BFMC_v2", 356, 400, lambda x: None)
+        cv2.createTrackbar("Fine Offset",   "BFMC_v2",  28, 100, lambda x: None)
+        cv2.createTrackbar("Base Speed",    "BFMC_v2",  85, 150, lambda x: None)
 
         # FIX: Explicitly set trackbar positions so they do not default to 0. 
-        # If Base Speed defaults to 0, the car will not move.
-        cv2.setTrackbarPos("Look Ahead", "BFMC_v2", 150)
-        cv2.setTrackbarPos("Lane Width PX", "BFMC_v2", 280)
-        cv2.setTrackbarPos("Fine Offset", "BFMC_v2", 50)
-        cv2.setTrackbarPos("Base Speed", "BFMC_v2", 50)
+        # These are updated based on the successful values provided by the user.
+        cv2.setTrackbarPos("Look Ahead", "BFMC_v2", 218)
+        cv2.setTrackbarPos("Lane Width PX", "BFMC_v2", 356)
+        cv2.setTrackbarPos("Fine Offset", "BFMC_v2", 28)
+        cv2.setTrackbarPos("Base Speed", "BFMC_v2", 85)
 
     # ------------------------------------------------------------------
-    # IMAGE PROCESSING
+    # ZEBRA-CROSSING IMMUNE & ADAPTIVE IMAGE PROCESSING
     # ------------------------------------------------------------------
     def _get_bev(self, frame):
         warped_colour = cv2.warpPerspective(frame, self.M, (640, 480))
         hls = cv2.cvtColor(warped_colour, cv2.COLOR_BGR2HLS)
-        L   = self.clahe.apply(hls[:, :, 1])
+        L = hls[:, :, 1]
+        
+        # Apply CLAHE to handle uneven road lighting (shadows, bright spots)
+        L = self.clahe.apply(L)
 
-        binary = cv2.adaptiveThreshold(
-            L, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY, 31, -8)
+        # 1. SOBEL X Edge Detection: 
+        # This mathematically ignores pure horizontal lines (zebra crossings)
+        # and only highlights vertical/diagonal geometry (lane lines).
+        sobelx = cv2.Sobel(L, cv2.CV_64F, 1, 0, ksize=3)
+        abs_sobelx = np.absolute(sobelx)
+        scaled_sobel = np.uint8(255 * abs_sobelx / max(1, np.max(abs_sobelx)))
+        sxbinary = np.zeros_like(scaled_sobel)
+        sxbinary[(scaled_sobel >= 35)] = 255
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        # 2. ADAPTIVE Global Lightness Threshold
+        # Finds the 95th percentile of brightness in the image. Since lane lines 
+        # are usually the brightest objects, they will set this upper bound. We 
+        # subtract an offset to capture the whole line even if global lighting drops.
+        p95 = np.percentile(L, 95)
+        dynamic_thresh = max(140, p95 - 40) # Floor at 140 to prevent triggering on dark grey
+        
+        l_binary = np.zeros_like(L)
+        l_binary[(L >= dynamic_thresh)] = 255
+        
+        # Combine them: Keep vertical edges OR very bright white/yellow pixels
+        combined_binary = np.zeros_like(L)
+        combined_binary[(sxbinary == 255) | (l_binary == 255)] = 255
+
+        # 3. Zebra Crossing Eradication Filter (Vertical Morphological Open)
+        # A tall, thin kernel (3x25) will completely erode and destroy any horizontal
+        # lines (crosswalk stripes) that are shorter than 25 pixels vertically, while
+        # keeping the vertical lane lines perfectly intact.
+        vert_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 25))
+        opened = cv2.morphologyEx(combined_binary, cv2.MORPH_OPEN, vert_kernel)
+
+        # 4. Fill gaps in the remaining valid lane lines
+        close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+        return cv2.morphologyEx(opened, cv2.MORPH_CLOSE, close_kernel)
 
     # ------------------------------------------------------------------
     # STEERING
@@ -634,18 +668,32 @@ class BFMC_Pilot:
                     speed = 0.0
                     if self._fps > 0 and int(self._fps_t) % 2 == 0:
                         cv2.putText(dbg, "BASE SPEED IS 0!", (200, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
-                elif nav_state == "ROUNDABOUT": speed = base_speed * self.rbt.SPEED_SCALE
-                elif nav_state == "JUNCTION":   speed = base_speed * 0.55
-                elif curvature > self.HIGH_CURV_THRESH: speed = base_speed * self.HIGH_CURV_SCALE
-                elif curvature > self.MED_CURV_THRESH:  speed = base_speed * self.MED_CURV_SCALE
-                elif abs(steer_angle) > 18:     speed = base_speed * 0.60
-                elif abs(steer_angle) > 10:     speed = base_speed * 0.80
-                else:                           speed = float(base_speed)
+                elif nav_state == "ROUNDABOUT": 
+                    speed = base_speed * self.rbt.SPEED_SCALE
+                elif nav_state == "JUNCTION":   
+                    speed = base_speed * 0.55
+                else:
+                    # SMOOTH ADAPTIVE SPEED
+                    # The harder the car steers, the more it proportionally slows down (down to 45% of base speed).
+                    # This replaces the old rigid step-functions and provides much smoother braking into corners.
+                    steer_factor = abs(steer_angle) / self.MAX_STEER
+                    adaptive_speed_scale = max(0.45, 1.0 - (steer_factor * 0.55))
 
+                    # Ensure tight path curvatures also trigger deceleration early
+                    if curvature > self.HIGH_CURV_THRESH:
+                        adaptive_speed_scale = min(adaptive_speed_scale, self.HIGH_CURV_SCALE)
+                    elif curvature > self.MED_CURV_THRESH:
+                        adaptive_speed_scale = min(adaptive_speed_scale, self.MED_CURV_SCALE)
+
+                    speed = float(base_speed * adaptive_speed_scale)
+
+                # Graceful stop when losing lines
                 if 0 < self.lost_frames <= LOST_GRACE_FRAMES:
                     speed *= max(0.3, 1.0 - self.lost_frames / LOST_GRACE_FRAMES)
 
-                if guard_on: speed *= guard_spd
+                # Guard slowdown priority
+                if guard_on: 
+                    speed *= guard_spd
 
                 steer_angle = max(-self.MAX_STEER, min(self.MAX_STEER, steer_angle))
 
