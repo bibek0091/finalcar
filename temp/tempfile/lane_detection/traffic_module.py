@@ -686,6 +686,13 @@ class TrafficDecisionEngine:
                                                "car-park")):
                 self.parking_fsm.trigger(now)
 
+            # ── Pedestrian on Road (Universal Fallback) ───────────────────────
+            elif lbl_lower in ("pedestrian", "person"):
+                # Stop if pedestrian's bounding box is wide and low enough to be in the lane
+                in_path = (x1 < fw * 0.75 and x2 > fw * 0.25 and y2 > fh * 0.40)
+                if in_path:
+                    commit(1, "SYS_STOP", "PEDESTRIAN ON ROAD")
+
             # ── Static obstacles / other cars ────────────────────────────────
             elif lbl_lower in ("car", "closed-road-stand", "roadblock", "obstacle"):
                 in_path = (x1 < fw * 0.80 and x2 > fw * 0.20 and y2 > fh * 0.60)
