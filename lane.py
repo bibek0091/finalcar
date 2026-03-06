@@ -2,10 +2,9 @@
 BFMC Hybrid Pilot - Hardware Version
 ================================================
 Modifications:
+  - FIX: Absolute path import to guarantee serial_handler.py is found if it's in the same folder.
   - REMOVED: Simulation mode entirely. The script now enforces hardware execution.
   - FIX: OpenCV Trackbars explicitly set to default values to prevent "Base Speed = 0" bugs.
-  - FIX: Throws explicit CRITICAL errors if hardware/camera imports are missing.
-  - ADDED: Continuous terminal warning if the serial connection to STM32 is dead.
 """
 
 import cv2
@@ -14,15 +13,20 @@ import math
 import time
 import logging
 import sys
+import os
 
 # ---------------------------------------------------------------------------
 # Serial handler - HARDWARE REQUIRED
 # ---------------------------------------------------------------------------
+# Force Python to look in the EXACT SAME folder as lane.py for serial_handler.py
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
 try:
-    sys.path.insert(0, "..")          # allow running from the sub-folder
     from serial_handler import STM32_SerialHandler
-except ImportError:
-    raise ImportError("CRITICAL: serial_handler.py not found! The car cannot move without it.")
+except ImportError as e:
+    raise ImportError(f"CRITICAL: serial_handler.py not found in {current_dir}! \nExact Error: {e}")
 
 # ---------------------------------------------------------------------------
 # Camera - HARDWARE REQUIRED
@@ -66,10 +70,8 @@ FRAME_PERIOD  = 1.0 / TARGET_FPS
 
 # ===========================================================================
 # LOST-LANE GRACE PERIOD
-# Car holds last steering and slows down for this many frames before stopping.
 # ===========================================================================
 LOST_GRACE_FRAMES = 8
-
 
 # ===========================================================================
 # HYBRID LANE TRACKER
@@ -267,7 +269,6 @@ class HybridLaneTracker:
     def _ema(self, prev, new):
         return new.copy() if prev is None else self.EMA_ALPHA * new + (1.0 - self.EMA_ALPHA) * prev
 
-
 # ===========================================================================
 # JUNCTION DETECTOR
 # ===========================================================================
@@ -317,7 +318,6 @@ class JunctionDetector:
 
         return self.state
 
-
 # ===========================================================================
 # ROUNDABOUT NAVIGATOR
 # ===========================================================================
@@ -359,7 +359,6 @@ class RoundaboutNavigator:
 
         return self.state
 
-
 # ===========================================================================
 # DIVIDER GUARD  (hard safety layer — runs every frame)
 # ===========================================================================
@@ -397,7 +396,6 @@ class DividerGuard:
             correction = div_corr - edge_corr
 
         return steer_angle + correction, speed_scale, triggered
-
 
 # ===========================================================================
 # MAIN PILOT
