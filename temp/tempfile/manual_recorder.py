@@ -3,18 +3,23 @@ import time
 import os
 import csv
 import argparse
-
-os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
-import pygame
+import curses
+import threading
 
 # Allow importing hardware modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from hardware.serial_handler import STM32_SerialHandler
-from hardware.imu_sensor import IMUSensor
+try:
+    from hardware.imu_sensor import IMUSensor
+    _IMU_AVAILABLE = True
+except ImportError:
+    _IMU_AVAILABLE = False
+
 
 class ManualRecorder:
-    def __init__(self, use_imu=True):
+    def __init__(self, stdscr, use_imu=True):
+        self.stdscr = stdscr
         self.use_imu = use_imu
         self.recording = False
         self.playing = False
@@ -27,62 +32,59 @@ class ManualRecorder:
         self.current_pwm = 0.0
         
         self.csv_filename = "telemetry_run.csv"
+        self.message_log = "--- Initializing Hardware ---"
         
-        print("\n--- Initializing Hardware ---")
+        # Make getch non-blocking
+        self.stdscr.nodelay(True)
+        curses.curs_set(0) # Hide cursor
+        
         self.serial = STM32_SerialHandler()
         if not self.serial.connect():
-            print("WARNING: STM32 not connected. Running in simulation mode.")
+            self.message_log = "WARNING: STM32 not connected. Simulating."
             
-        if self.use_imu:
+        if self.use_imu and _IMU_AVAILABLE:
             self.imu = IMUSensor()
             self.imu.start()
         else:
             self.imu = None
             
-        pygame.init()
-        self.screen = pygame.display.set_mode((400, 300))
-        pygame.display.set_caption("BFMC Manual Recorder")
-        self.font = pygame.font.SysFont("monospace", 15)
-        self.clock = pygame.time.Clock()
+        self.target_fps = 30
+        self.frame_period = 1.0 / self.target_fps
+
+    def _draw_hud(self, actual_fps):
+        self.stdscr.erase()
         
-    def _draw_hud(self, fps):
-        self.screen.fill((30, 30, 30))
+        header = "=== BFMC Terminal Telemetry Console ==="
+        self.stdscr.addstr(0, 0, header, curses.A_BOLD)
+        self.stdscr.addstr(1, 0, f"FPS: {actual_fps:.1f}")
         
-        text_lines = [
-            f"--- BFMC Telemetry Console ---",
-            f"FPS: {fps:.1f}",
-            "",
-            f"Steer (A/D): {self.current_steer:>5.1f} deg",
-            f"PWM   (W/S): {self.current_pwm:>5.1f}",
-            f"Yaw        : {self.imu.get_yaw() if self.imu else 0.0:>5.1f} deg",
-            "",
-            "Controls:",
-            "  [R] - Start/Stop Recording",
-            "  [P] - Playback Telemetry CSV",
-            "  [ESC] - Quit",
-            ""
-        ]
+        self.stdscr.addstr(3, 0, f"Steer (A/D): {self.current_steer:>5.1f} deg")
+        self.stdscr.addstr(4, 0, f"PWM   (W/S): {self.current_pwm:>5.1f}")
+        y_yaw = self.imu.get_yaw() if self.imu else 0.0
+        self.stdscr.addstr(5, 0, f"Yaw        : {y_yaw:>5.1f} deg")
         
+        self.stdscr.addstr(7, 0, "Controls:")
+        self.stdscr.addstr(8, 2, "[R] - Start/Stop Recording")
+        self.stdscr.addstr(9, 2, "[P] - Playback Telemetry CSV")
+        self.stdscr.addstr(10, 2, "[ESC] or [Q] - Quit")
+        
+        # Status Line
         if self.recording:
-            text_lines.append(f"STATUS: [REC] {len(self.recorded_data)} samples")
-            color = (255, 50, 50)
+            stat_str = f"STATUS: [REC] {len(self.recorded_data)} samples"
+            self.stdscr.addstr(12, 0, stat_str, curses.A_STANDOUT)
         elif self.playing:
-            text_lines.append("STATUS: [PLAYING]")
-            color = (50, 255, 50)
+            self.stdscr.addstr(12, 0, "STATUS: [PLAYING]", curses.A_BOLD)
         else:
-            text_lines.append("STATUS: IDLE")
-            color = (200, 200, 200)
+            self.stdscr.addstr(12, 0, "STATUS: IDLE")
             
-        for i, line in enumerate(text_lines):
-            text_surface = self.font.render(line, True, color if "STATUS" in line else (255,255,255))
-            self.screen.blit(text_surface, (20, 20 + i * 20))
+        self.stdscr.addstr(14, 0, f"Log: {self.message_log}")
             
-        pygame.display.flip()
+        self.stdscr.refresh()
 
     def load_csv(self):
         data = []
         if not os.path.exists(self.csv_filename):
-            print(f"Error: {self.csv_filename} not found.")
+            self.message_log = f"Error: {self.csv_filename} not found."
             return []
             
         with open(self.csv_filename, 'r') as f:
@@ -91,12 +93,12 @@ class ManualRecorder:
             for row in reader:
                 if len(row) == 4:
                     data.append((float(row[0]), float(row[1]), float(row[2]), float(row[3])))
-        print(f"Loaded {len(data)} samples from {self.csv_filename}")
+        self.message_log = f"Loaded {len(data)} samples."
         return data
 
     def save_csv(self):
         if not self.recorded_data:
-            print("No data to save.")
+            self.message_log = "No data to save."
             return
             
         with open(self.csv_filename, 'w', newline='') as f:
@@ -104,89 +106,79 @@ class ManualRecorder:
             writer.writerow(['dt', 'steer_deg', 'speed_pwm', 'yaw_deg'])
             for row in self.recorded_data:
                 writer.writerow(row)
-        print(f"Saved {len(self.recorded_data)} samples to {self.csv_filename}")
-
-    def play_sequence(self):
-        data = self.load_csv()
-        if not data:
-            return
-            
-        print("\n--- PLAYBACK STARTED ---")
-        self.playing = True
-        
-        for dt, steer, pwm, yaw in data:
-            # Handle quit events during playback
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.playing = False
-                    return
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_q:
-                    self.playing = False
-                    print("Playback aborted by user.")
-                    self.serial.set_speed(0.0)
-                    self.serial.set_steering(0.0)
-                    return
-            
-            self.current_steer = steer
-            self.current_pwm = pwm
-            
-            # Send to hardware
-            self.serial.set_speed(self.current_pwm)
-            self.serial.set_steering(self.current_steer)
-            
-            self._draw_hud(self.clock.get_fps())
-            time.sleep(dt)
-            
-        self.serial.set_speed(0.0)
-        self.serial.set_steering(0.0)
-        self.current_steer = 0.0
-        self.current_pwm = 0.0
-        self.playing = False
-        print("--- PLAYBACK FINISHED ---")
+        self.message_log = f"Saved {len(self.recorded_data)} samples."
 
     def run(self):
         running = True
         last_time = time.time()
+        fps_time = last_time
+        frames_this_sec = 0
+        actual_fps = 0.0
+        
+        play_data = []
+        play_idx = 0
         
         while running:
-            dt = self.clock.tick(30) / 1000.0 # Target 30 FPS
+            now = time.time()
+            loop_dt = now - last_time
             
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
+            # FPS Calculation
+            frames_this_sec += 1
+            if now - fps_time >= 1.0:
+                actual_fps = frames_this_sec / (now - fps_time)
+                frames_this_sec = 0
+                fps_time = now
+            
+            # Handle Keyboard Input
+            c = self.stdscr.getch()
+            
+            if c != -1:
+                if c == 27 or c == ord('q') or c == ord('Q'): # ESC or Q
                     running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        running = False
-                    elif event.key == pygame.K_r and not self.playing:
+                    break
+                
+                # Command Toggles
+                if not self.playing:
+                    if c == ord('r') or c == ord('R'):
                         if self.recording:
                             self.recording = False
                             self.save_csv()
                         else:
-                            print("\n--- RECORDING STARTED ---")
+                            self.message_log = "RECORDING STARTED"
                             self.recorded_data = []
                             self.recording = True
-                    elif event.key == pygame.K_p and not self.recording:
-                        loaded = self.load_csv()
-                        if loaded:
-                            self.playing = True
-                            self.play_data = loaded
-                            self.play_idx = 0
-                            print("\n--- PLAYBACK STARTED ---")
+                    
+                    elif c == ord('p') or c == ord('P'):
+                        if not self.recording:
+                            loaded = self.load_csv()
+                            if loaded:
+                                self.playing = True
+                                play_data = loaded
+                                play_idx = 0
+                                self.message_log = "PLAYBACK STARTED"
+                                
+                else: # Allow cancelling playback
+                    if c == ord('c') or c == ord('C'):
+                        self.playing = False
+                        self.message_log = "Playback aborted by user."
+                        self.serial.set_speed(0.0)
+                        self.serial.set_steering(0.0)
             
+            # Subsystem Logic
             if self.playing:
-                if self.play_idx < len(self.play_data):
-                    dt, steer, pwm, yaw = self.play_data[self.play_idx]
+                if play_idx < len(play_data):
+                    dt, steer, pwm, yaw = play_data[play_idx]
                     self.current_steer = steer
                     self.current_pwm = pwm
                     
                     self.serial.set_speed(self.current_pwm)
                     self.serial.set_steering(self.current_steer)
-                    self._draw_hud(self.clock.get_fps())
+                    self._draw_hud(actual_fps)
                     
-                    time.sleep(dt)
-                    self.play_idx += 1
+                    time.sleep(dt) # Emulate exact recorded timeframe
+                    play_idx += 1
                 else:
-                    print("--- PLAYBACK FINISHED ---")
+                    self.message_log = "PLAYBACK FINISHED"
                     self.serial.set_speed(0.0)
                     self.serial.set_steering(0.0)
                     self.current_steer = 0.0
@@ -195,50 +187,53 @@ class ManualRecorder:
                     last_time = time.time()
                 continue
                 
-            keys = pygame.key.get_pressed()
-            
-            # Keyboard Logic
+            # Manual Control state
             self.current_pwm = 0.0
-            if keys[pygame.K_w] or keys[pygame.K_UP]:
-                self.current_pwm = self.base_speed_pwm
-            elif keys[pygame.K_s] or keys[pygame.K_DOWN]:
-                self.current_pwm = -self.base_speed_pwm # Reverse
-                
             self.current_steer = 0.0
-            if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            
+            if c == ord('w') or c == curses.KEY_UP:
+                self.current_pwm = self.base_speed_pwm
+            elif c == ord('s') or c == curses.KEY_DOWN:
+                self.current_pwm = -self.base_speed_pwm
+            elif c == ord('a') or c == curses.KEY_LEFT:
                 self.current_steer = -self.max_steer
-            elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            elif c == ord('d') or c == curses.KEY_RIGHT:
                 self.current_steer = self.max_steer
                 
-            # Send to hardware
             self.serial.set_speed(self.current_pwm)
             self.serial.set_steering(self.current_steer)
             
             # Record
             if self.recording:
-                now = time.time()
                 real_dt = now - last_time
                 yaw = self.imu.get_yaw() if self.imu else 0.0
                 self.recorded_data.append((real_dt, self.current_steer, self.current_pwm, yaw))
-                last_time = now
-            else:
-                last_time = time.time()
                 
-            self._draw_hud(self.clock.get_fps())
+            last_time = now
+            self._draw_hud(actual_fps)
             
-        print("\nShutting down Manual Recorder...")
+            # Sleep to maintain frame rate
+            elapsed_loop = time.time() - now
+            sleep_time = self.frame_period - elapsed_loop
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+                
+        # Shutdown
         if self.recording:
             self.save_csv()
         self.serial.set_speed(0.0)
         self.serial.set_steering(0.0)
         if self.imu:
             self.imu.stop()
-        pygame.quit()
 
-if __name__ == "__main__":
+def main(stdscr):
     parser = argparse.ArgumentParser(description="BFMC Manual Recording & Playback")
     parser.add_argument("--no-imu", action="store_true", help="Disable IMU background thread")
+    # Parse args manually because curses wrap steals sys.argv slightly weirdly if not careful
     args = parser.parse_args()
     
-    app = ManualRecorder(use_imu=not args.no_imu)
+    app = ManualRecorder(stdscr, use_imu=not args.no_imu)
     app.run()
+
+if __name__ == "__main__":
+    curses.wrapper(main)
