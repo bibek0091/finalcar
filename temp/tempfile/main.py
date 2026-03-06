@@ -2,6 +2,7 @@ import cv2
 import time
 import numpy as np
 import argparse
+import os
 from lane_detection.camera import Camera
 from lane_detection.lane_detector import LaneDetector
 from lane_detection.controller import Controller
@@ -67,9 +68,13 @@ def annotate_bev(lane_result, control_output, t_res=None, behav_out=None):
 
 
 def main():
+    # Force default model path to be absolute relative to this script's directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_model = os.path.join(script_dir, "lane_detection", "lane_detection", "best.pt")
+
     parser = argparse.ArgumentParser(description="BFMC Tempfile Stack for Raspberry Pi")
     parser.add_argument("--headless", action="store_true", help="Run without UI displays (avoids X11 crashes on headless Pi)")
-    parser.add_argument("--model", type=str, default="temp/tempfile/lane_detection/lane_detection/best.pt", help="Path to YOLO model (e.g. best.onnx for Pi speedup)")
+    parser.add_argument("--model", type=str, default=default_model, help="Path to YOLO model (e.g. best.onnx for Pi speedup)")
     args = parser.parse_args()
 
     print("\n--- Initializing Autonomous Lane Follower ---")

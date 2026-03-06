@@ -130,16 +130,26 @@ class ThreadedYOLODetector:
                     conf  = box.conf[0].item()
                     detections.append({"label": label, "confidence": conf,
                                        "bbox": (x1, y1, x2, y2)})
-                if not self.result_queue.full():
-                    self.result_queue.put(detections)
+                # Flush existing results to push the newest one immediately
+                while not self.result_queue.empty():
+                    try:
+                        self.result_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                self.result_queue.put(detections)
             except queue.Empty:
                 pass
             except Exception as e:
                 print(f"YOLO Thread Error: {e}")
 
     def update_frame(self, frame):
-        if not self.frame_queue.full():
-            self.frame_queue.put(frame.copy())
+        # Drop stale frames to process ONLY the newest frame
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                break
+        self.frame_queue.put(frame.copy())
 
     def get_detections(self):
         if not self.result_queue.empty():
