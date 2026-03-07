@@ -1,10 +1,8 @@
-
+# ===================================== GENERAL IMPORTS ==================================
 import sys
 import time
 import os
 import psutil
-
-# removed qt_qpa to prevent plugin crash
 
 # Automatically create the 'temp' directory if it's missing to prevent FileNotFoundError
 os.makedirs("temp", exist_ok=True)
@@ -91,11 +89,8 @@ queueList = {
     "General": Queue(),
     "Config": Queue(),
     "Log": Queue(),
-    "Vision": Queue(maxsize=2),       # Custom: Used by our YOLO script
-    "Autonomous": Queue(maxsize=2),   # Custom: Used by our Brain script
-    "DashBEV": Queue(maxsize=2),      # Dashboard: BEV lane debug frames (base64)
-    "DashYOLO": Queue(maxsize=2),     # Dashboard: YOLO annotated frames (base64)
-    "DashDecision": Queue(maxsize=2), # Dashboard: Decision engine state (JSON)
+    "Vision": Queue(),       # Custom: Used by our YOLO script
+    "Autonomous": Queue()    # Custom: Used by our Brain script
 }
 logging = logging.getLogger()
 
@@ -147,28 +142,23 @@ allEvents.append(serial_handler_ready)
 
 # ===================================== INITIALIZE OUR CUSTOM STACK =====================
 
-# 1. Start the Gateway (WebSockets for Telemetry to Dashboard) — must start FIRST
+# 1. Start the Gateway (WebSockets for Telemetry to Dashboard)
 try:
     from src.gateway.processGateway import processGateway
-    processGateway_inst = processGateway(queueList, logging)
-    processGateway_inst.daemon = True
-    processGateway_inst.start()
+    gateway_process = processGateway(queueList, logging)
+    allProcesses.append(gateway_process)
 except Exception as e:
-    processGateway_inst = None
     logging.warning(f"Skipping Gateway: {e}")
 
-# 1b. Start the Dashboard (Flask+SocketIO on port 5005)
-dashboard_ready = Event()
+# 2. Start the Vision Process (YOLO)
 try:
-    from src.dashboard.processDashboard import processDashboard
-    dashboard_process = processDashboard(queueList, logging, dashboard_ready, debugging=False)
-    allProcesses.append(dashboard_process)
-    allEvents.append(dashboard_ready)
+    from src.autonomous.threads.processVision import processVision
+    vision_process = processVision(queueList, logging)
+    allProcesses.append(vision_process)
 except Exception as e:
-    logging.warning(f"Skipping Dashboard: {e}")
-    dashboard_ready.set()  # Don't block if dashboard is missing
+    logging.warning(f"Skipping Vision: {e}")
 
-# 2. Start the Autonomous Process (The Brain)
+# 3. Start the Autonomous Process (The Brain)
 from src.autonomous.threads.processAutonomous import processAutonomous
 autonomous_process = processAutonomous(queueList, logging)
 allProcesses.append(autonomous_process)
@@ -209,11 +199,7 @@ except KeyboardInterrupt:
 
     for proc in reversed(allProcesses):
         proc.stop()
-    if processGateway_inst:
-        processGateway_inst.stop()
 
     # wait for all processes to finish before exiting
     for proc in reversed(allProcesses):
         shutdown_process(proc)
-    if processGateway_inst:
-        shutdown_process(processGateway_inst)

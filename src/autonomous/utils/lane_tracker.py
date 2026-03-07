@@ -1,180 +1,135 @@
-import numpy as np
 import cv2
+import numpy as np
+import math
+import sys
+import warnings
+from dataclasses import dataclass
 
-class DeadReckoningNavigator:
-    def __init__(self):
-        self.last_valid_target    = 320.0
-        self.last_valid_curvature = 0.0
-        self._lost_time_s         = 0.0
-        self.yaw_at_loss          = 0.0
-        self.is_lost              = False
+# ══════════════════════════════════════════════════════════════════════════════
+# DATACLASSES
+# ══════════════════════════════════════════════════════════════════════════════
+@dataclass
+class PerceptionResult:
+    warped_binary: np.ndarray
+    lane_dbg: np.ndarray
+    sl: object
+    sr: object
+    target_x: float
+    anchor: str
+    confidence: float
+    lane_width_px: float
+    curvature: float
+    heading_rad: float
+    y_eval: float = 400.0
 
-    def reset_lost_timer(self, current_yaw: float):
-        self._lost_time_s = 0.0
-        self.yaw_at_loss  = current_yaw
-        self.is_lost      = False
+@dataclass
+class ControlOutput:
+    steer_angle_deg: float
+    speed_pwm: float
+    target_x: float
+    anchor: str
 
-    def accumulate(self, dt: float, current_yaw: float):
-        if not self.is_lost:
-            self.yaw_at_loss = current_yaw
-            self.is_lost = True
-        self._lost_time_s += dt
-
-    def predict_target(self, last_speed, last_steering, current_yaw):
-        t = max(0.0, self._lost_time_s)
-        delta_yaw_deg = current_yaw - self.yaw_at_loss
-
-        if abs(self.last_valid_curvature) > 0.0015 or abs(last_steering) > 5.0:
-            # Curved road - use the last known target and steering to navigate the bend
-            # We hold the steering through the curve using the previous optimal track positioning
-            predicted_target = self.last_valid_target
-            confidence = max(0.0, 1.0 - t / 3.0) # Decay over 3s on curve
-        else:
-            # Straight road - force target to centre to go straight
-            # If IMU indicates drift, counteract it heavily by pushing the target in the OPPOSITE direction!
-            # Example: If delta_yaw is +5 (Right), target becomes 320 - (5*20) = 220 (Left), forcing Stanley to steer Left!
-            predicted_target = 320.0 - (delta_yaw_deg * 20.0) 
-            confidence = max(0.0, 1.0 - t / 5.0) # Decay over 5s on straight
-
-        predicted_target = float(np.clip(predicted_target, 150, 490))
-        return predicted_target, confidence
-
+# ══════════════════════════════════════════════════════════════════════════════
+# PERCEPTION: PURE BEV & LANE TRACKING
+# ══════════════════════════════════════════════════════════════════════════════
 class HybridLaneTracker:
-    NWINDOWS         = 9
-    SW_MARGIN        = 60
-    MINPIX           = 50
-    POLY_MARGIN_BASE = 60
-    POLY_MARGIN_CURV = 120
-    MIN_PIX_OK       = 200
-    EMA_ALPHA        = 0.85
-    EMA_ALPHA_TURN   = 1.0
+    NWINDOWS = 9
+    SW_MARGIN = 60
+    MINPIX = 50
+    MIN_PIX_OK = 200
+    EMA_ALPHA = 0.55
     STALE_FIT_FRAMES = 12
 
-    WIDE_ROAD_PX             = 420
-    SINGLE_LANE_PX           = 200
-    RIGHT_LANE_BIAS_PX       = 25   # Shift target 25 pixels closer to the right edge
-    DIVIDER_FOLLOW_OFFSET_PX = 145  # Must be > DIVIDER_SAFE_PX (130) to avoid force-field oscillations
+    WIDE_ROAD_PX = 420
+    RIGHT_LANE_BIAS_PX = 0
+    DIVIDER_FOLLOW_OFFSET_PX = 90
 
     def __init__(self, img_shape=(480, 640)):
         self.h, self.w = img_shape
-        self.mode       = "SEARCH"
-        self.left_fit   = None
-        self.right_fit  = None
-        self.sl         = None
-        self.sr         = None
-        self.left_conf  = 0
-        self.right_conf = 0
-        self.left_stale  = 0
+        self.mode = "SEARCH"
+        self.sl = None
+        self.sr = None
+        self.left_stale = 0
         self.right_stale = 0
-        self.dead_reckoner = DeadReckoningNavigator()
         self.estimated_lane_width = 280.0
+        self.last_target_x = 320.0
 
-    def update(self, warped_binary, map_hint: str = "STRAIGHT"):
-        nz  = warped_binary.nonzero()
+    def update(self, warped_binary):
+        nz = warped_binary.nonzero()
         nzy = np.array(nz[0])
         nzx = np.array(nz[1])
 
         if self.mode == "TRACKING" and (self.sl is not None or self.sr is not None):
-            curv = self.get_curvature(self.h // 2)
-            li, ri, dbg = self._poly_search(warped_binary, nzx, nzy, curvature=curv, map_hint=map_hint)
-            mode_label  = "POLY"
+            li, ri, dbg = self._poly_search(warped_binary, nzx, nzy)
         else:
-            li, ri, dbg = self._sliding_window(warped_binary, nzx, nzy, map_hint=map_hint)
-            mode_label  = "SLIDE"
+            li, ri, dbg = self._sliding_window(warped_binary, nzx, nzy)
 
-        self.left_conf  = len(li)
-        self.right_conf = len(ri)
-        has_l = self.left_conf  >= self.MIN_PIX_OK
-        has_r = self.right_conf >= self.MIN_PIX_OK
+        has_l = len(li) >= self.MIN_PIX_OK
+        has_r = len(ri) >= self.MIN_PIX_OK
 
+        # Safe polyfit with try-except to catch singular matrices on perfectly straight noisy lines
         if has_l:
-            fl = np.polyfit(nzy[li], nzx[li], 2)
-            self.left_fit  = fl
-            curv_now = self.get_curvature(self.h // 2)
-            alpha = self.EMA_ALPHA_TURN if curv_now > 0.002 else self.EMA_ALPHA
-            self.sl        = self._ema(self.sl, fl, alpha)
-            self.left_stale = 0
-        else:
-            self.left_stale += 1
+            try:
+                fl = np.polyfit(nzy[li], nzx[li], 2)
+                self.sl = self._ema(self.sl, fl, self.EMA_ALPHA)
+                self.left_stale = 0
+            except Exception:
+                has_l = False
+                self.left_stale += 1
+
+        if not has_l:
             if self.left_stale > self.STALE_FIT_FRAMES:
-                self.left_fit, self.sl = None, None
+                self.sl = None
+            else:
+                self.left_stale += 1
 
         if has_r:
-            fr = np.polyfit(nzy[ri], nzx[ri], 2)
-            self.right_fit  = fr
-            curv_now = self.get_curvature(self.h // 2)
-            alpha = self.EMA_ALPHA_TURN if curv_now > 0.002 else self.EMA_ALPHA
-            self.sr         = self._ema(self.sr, fr, alpha)
-            self.right_stale = 0
-        else:
-            self.right_stale += 1
+            try:
+                fr = np.polyfit(nzy[ri], nzx[ri], 2)
+                self.sr = self._ema(self.sr, fr, self.EMA_ALPHA)
+                self.right_stale = 0
+            except Exception:
+                has_r = False
+                self.right_stale += 1
+                
+        if not has_r:
             if self.right_stale > self.STALE_FIT_FRAMES:
-                self.right_fit, self.sr = None, None
+                self.sr = None
+            else:
+                self.right_stale += 1
 
         if has_l and has_r:
-            if not self._width_sane(self.left_fit, self.right_fit):
-                if self.left_conf < self.right_conf:
-                    self.left_fit, self.sl, self.left_stale, has_l = None, None, self.STALE_FIT_FRAMES, False
-                else:
-                    self.right_fit, self.sr, self.right_stale, has_r = None, None, self.STALE_FIT_FRAMES, False
-            else:
-                y_positions = [100, 200, 300, 400]
-                widths = [np.polyval(self.sr, y) - np.polyval(self.sl, y) for y in y_positions]
-                weighted_avg_width = np.average(widths, weights=[4, 3, 2, 1])
-                self.estimated_lane_width = 0.8 * self.estimated_lane_width + 0.2 * weighted_avg_width
+            y_positions = [100, 200, 300, 400]
+            widths = [np.polyval(self.sr, y) - np.polyval(self.sl, y) for y in y_positions]
+            weighted_avg_width = np.average(widths, weights=[4, 3, 2, 1])
+            self.estimated_lane_width = 0.8 * self.estimated_lane_width + 0.2 * weighted_avg_width
 
         self.mode = "TRACKING" if (has_l or has_r or self.sl is not None or self.sr is not None) else "SEARCH"
-        return self.sl, self.sr, dbg, mode_label
+        return self.sl, self.sr, dbg
 
-    def get_target_x(self, y_eval, lane_width_px, extra_offset_px=0,
-                     nav_state="NORMAL", frames_lost=0,
-                     last_speed=0.0, last_steering=0.0, current_yaw=0.0):
-        sl, sr = self.sl, self.sr
-        hw = lane_width_px / 2.0
+    def get_target_x(self, y_eval):
+        hw = self.estimated_lane_width / 2.0
         def ev(fit): return float(np.polyval(fit, y_eval))
 
-        if nav_state == "ROUNDABOUT":
-            if sl is not None: return ev(sl) + hw + extra_offset_px, "RBT_INNER"
-            if sr is not None: return ev(sr) - hw + extra_offset_px, "RBT_OUTER"
-            return None, "RBT_LOST"
-
-        if nav_state.startswith("JUNCTION"):
-            if nav_state == "JUNCTION_RIGHT":
-                if sr is not None: return ev(sr) - (lane_width_px * 0.40) + extra_offset_px, "JCT_RIGHT_EDGE"
-                elif sl is not None: return ev(sl) + (lane_width_px * 1.5) + extra_offset_px, "JCT_RIGHT_GHOST"
-                else: return 320.0 + (lane_width_px * 0.8) + extra_offset_px, "JCT_RIGHT_BLIND"
-            elif nav_state == "JUNCTION_LEFT":
-                if sl is not None: return ev(sl) + (lane_width_px * 0.40) + extra_offset_px, "JCT_LEFT_EDGE"
-                elif sr is not None: return ev(sr) - (lane_width_px * 1.5) + extra_offset_px, "JCT_LEFT_GHOST"
-                else: return 320.0 - (lane_width_px * 0.8) + extra_offset_px, "JCT_LEFT_BLIND"
-            return 320.0 + extra_offset_px, "JCT_WAITING_CHOICE"
-
-        has_right = (sr is not None)
-        has_left  = (sl is not None)
+        has_right = (self.sr is not None)
+        has_left  = (self.sl is not None)
 
         if not has_right and not has_left:
-            predicted_x, conf = self.dead_reckoner.predict_target(last_speed, last_steering, current_yaw)
-            return predicted_x + extra_offset_px, f"DEAD_RECKONING_{conf:.2f}"
+            return self.last_target_x, "DEAD_RECKONING (FALLBACK)"
 
         if has_right:
             if has_left:
-                if lane_width_px >= self.WIDE_ROAD_PX:
-                    base_x = (ev(sl) + ev(sr)) / 2.0 + self.RIGHT_LANE_BIAS_PX
-                    anchor = "RL_DUAL"
-                else:
-                    base_x = (ev(sl) + ev(sr)) / 2.0 + self.RIGHT_LANE_BIAS_PX
-                    anchor = "RL_DUAL"
+                base_x = (ev(self.sl) + ev(self.sr)) / 2.0 + self.RIGHT_LANE_BIAS_PX
+                anchor = "RL_DUAL"
             else:
-                base_x = ev(sr) - hw + self.RIGHT_LANE_BIAS_PX
+                base_x = ev(self.sr) - hw + self.RIGHT_LANE_BIAS_PX
                 anchor = "RL_FROM_EDGE"
         else:
-            base_x = ev(sl) + self.DIVIDER_FOLLOW_OFFSET_PX
+            base_x = ev(self.sl) + self.DIVIDER_FOLLOW_OFFSET_PX
             anchor = "DIVIDER_FOLLOW"
 
-        self.dead_reckoner.last_valid_target    = base_x
-        self.dead_reckoner.last_valid_curvature = self.get_curvature(y_eval)
-        self.dead_reckoner.reset_lost_timer(current_yaw)
-        return base_x + extra_offset_px, anchor
+        self.last_target_x = base_x
+        return base_x, anchor
 
     def get_curvature(self, y_eval):
         fit = self.sr if self.sr is not None else self.sl
@@ -183,30 +138,16 @@ class HybridLaneTracker:
         denom = (1.0 + (2.0 * a * y_eval + b) ** 2) ** 1.5
         return abs(2.0 * a) / max(denom, 1e-6)
 
-    def _sliding_window(self, warped, nzx, nzy, map_hint: str = "STRAIGHT"):
-        dbg  = cv2.cvtColor(warped, cv2.COLOR_GRAY2BGR)
+    def _sliding_window(self, warped, nzx, nzy):
+        dbg = cv2.cvtColor(warped, cv2.COLOR_GRAY2BGR)
         hist = np.sum(warped[self.h // 2:, :], axis=0)
         mid, margin = int(self.w * 0.40), self.SW_MARGIN
 
-        shift = 0
-        if map_hint == "LEFT":  shift = -80
-        elif map_hint == "RIGHT": shift = 80
-
-        l_lo =  max(margin, margin + shift)
-        l_hi =  max(l_lo + 1, mid - margin + shift)
-        r_lo =  max(margin, mid + margin + shift)
-        r_hi =  min(self.w - margin, self.w - margin)   
+        l_lo, l_hi = margin, mid - margin
+        r_lo, r_hi = mid + margin, self.w - margin
 
         lb = int(np.argmax(hist[l_lo:l_hi])) + l_lo if l_hi > l_lo else margin
         rb = int(np.argmax(hist[r_lo:r_hi])) + r_lo if r_hi > r_lo else mid + margin
-
-        if abs(rb - lb) < 100:
-            smoothed = np.convolve(hist.astype(float), np.ones(20) / 20, mode='same')
-            p1 = int(np.argmax(smoothed))
-            tmp = smoothed.copy()
-            tmp[max(0, p1-40):min(self.w, p1+40)] = 0
-            p2 = int(np.argmax(tmp))
-            lb, rb = (min(p1, p2), max(p1, p2))
 
         wh = self.h // self.NWINDOWS
         lx, rx = lb, rb
@@ -227,34 +168,253 @@ class HybridLaneTracker:
             if len(gl) > self.MINPIX: lx = int(np.mean(nzx[gl]))
             if len(gr) > self.MINPIX: rx = int(np.mean(nzx[gr]))
 
-        li, ri = np.concatenate(li) if len(li) else np.array([]), np.concatenate(ri) if len(ri) else np.array([])
+        li, ri = np.concatenate(li), np.concatenate(ri)
         if len(li): dbg[nzy[li], nzx[li]] = [255, 80, 80]
         if len(ri): dbg[nzy[ri], nzx[ri]] = [80,  80, 255]
         return li, ri, dbg
 
-    def _poly_search(self, warped, nzx, nzy, curvature=0.0, map_hint: str = "STRAIGHT"):
+    def _poly_search(self, warped, nzx, nzy):
         dbg = cv2.cvtColor(warped, cv2.COLOR_GRAY2BGR)
-        m = (self.POLY_MARGIN_CURV if curvature > 0.0015 else self.POLY_MARGIN_BASE)
-
+        m = 80 # Poly margin
         def band(fit): return ((nzx > np.polyval(fit, nzy) - m) & (nzx < np.polyval(fit, nzy) + m)).nonzero()[0]
+        
         li = band(self.sl) if self.sl is not None else np.array([], dtype=int)
         ri = band(self.sr) if self.sr is not None else np.array([], dtype=int)
 
         if len(li) < self.MIN_PIX_OK and len(ri) < self.MIN_PIX_OK:
             self.mode = "SEARCH"
-            return self._sliding_window(warped, nzx, nzy, map_hint=map_hint)
+            return self._sliding_window(warped, nzx, nzy)
 
         if len(li): dbg[nzy[li], nzx[li]] = [255, 80, 80]
         if len(ri): dbg[nzy[ri], nzx[ri]] = [80,  80, 255]
         return li, ri, dbg
 
-    def _width_sane(self, lf, rf, y=400):
-        if rf is None or lf is None: return False
-        w = np.polyval(rf, y) - np.polyval(lf, y)
-        return 180 < w < 420
-
-    def _ema(self, prev, new, alpha=None):
-        if alpha is None:
-            alpha = self.EMA_ALPHA
+    def _ema(self, prev, new, alpha):
         if prev is None: return new.copy()
         return alpha * new + (1.0 - alpha) * prev
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONTROL: STANLEY & DIVIDER GUARD
+# ══════════════════════════════════════════════════════════════════════════════
+class StanleyController:
+    def __init__(self, k=1.2, ks=0.2):
+        self.k = k
+        self.ks = ks
+
+    def compute(self, target_x_px, heading_rad, velocity_ms, lane_width_px):
+        ppm = max(lane_width_px, 50) / 0.35  # pixels per metre
+        ce_m = (320.0 - target_x_px) / ppm   # cross-track error (metres)
+        
+        k_eff = self.k * min(1.0, velocity_ms / 0.25) if velocity_ms > 0 else self.k
+        reactive_rad = heading_rad + math.atan2(k_eff * ce_m, velocity_ms + self.ks)
+        return math.degrees(reactive_rad)
+
+class DividerGuard:
+    DIVIDER_SAFE_PX = 130
+    EDGE_SAFE_PX = 100
+    GAIN = 0.35
+    MAX_CORR = 25.0
+
+    def apply(self, steer_angle, left_fit, right_fit, car_x=320, y_eval=440):
+        correction = 0.0
+        div_corr = edge_corr = 0.0
+        speed_scale = 1.0
+
+        if left_fit is not None:
+            gap = car_x - float(np.polyval(left_fit, y_eval))
+            if gap < self.DIVIDER_SAFE_PX:
+                err = float(self.DIVIDER_SAFE_PX - gap)
+                div_corr = min((self.GAIN * 3.0) * err, self.MAX_CORR)
+                speed_scale = min(speed_scale, max(0.2, 1.0 - err / 60.0))
+
+        if right_fit is not None:
+            gap = float(np.polyval(right_fit, y_eval)) - car_x
+            if gap < self.EDGE_SAFE_PX:
+                err = float(self.EDGE_SAFE_PX - gap)
+                edge_corr = min(self.GAIN * err, self.MAX_CORR * 0.4)
+                speed_scale = min(speed_scale, max(0.5, 1.0 - err / 100.0))
+
+        correction = div_corr - edge_corr
+        return steer_angle + correction, speed_scale
+
+class Controller:
+    MAX_STEER = 45.0
+    MAX_STEER_RATE = 20.0
+
+    def __init__(self):
+        self.prev_steer = 0.0
+        self.guard = DividerGuard()
+        self.stanley = StanleyController()
+        self.base_speed = 50.0
+
+    def compute(self, perc_res, velocity_ms=0.5):
+        raw_steer = self.stanley.compute(
+            perc_res.target_x, perc_res.heading_rad, velocity_ms, perc_res.lane_width_px)
+
+        rate_delta = max(-self.MAX_STEER_RATE, min(self.MAX_STEER_RATE, raw_steer - self.prev_steer))
+        steer_angle = self.prev_steer + rate_delta
+        
+        alpha = 0.7 
+        steer_angle = alpha * self.prev_steer + (1 - alpha) * steer_angle
+        self.prev_steer = steer_angle
+
+        steer_guarded, guard_spd_mult = self.guard.apply(
+            steer_angle, perc_res.sl, perc_res.sr, y_eval=perc_res.y_eval)
+        steer_angle = max(-self.MAX_STEER, min(self.MAX_STEER, steer_guarded))
+
+        speed = float(self.base_speed)
+        if perc_res.anchor == "DIVIDER_FOLLOW":
+            speed *= 0.75
+
+        final_speed = speed * guard_spd_mult
+        return ControlOutput(steer_angle, final_speed, perc_res.target_x, perc_res.anchor)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN LOOP & TUNER UI
+# ══════════════════════════════════════════════════════════════════════════════
+def nothing(x): pass
+
+def main():
+    # Suppress numpy RankWarnings which flood the console when polyfit is run on straight/noisy lines
+    warnings.simplefilter('ignore', np.RankWarning)
+    
+    print("[INFO] Initializing Camera...")
+    cap = cv2.VideoCapture(0) # 0 for webcam, or change to a path like "video.mp4"
+    
+    if not cap.isOpened():
+        print("[ERROR] Could not open video source! Check /dev/video0 or your webcam connection.")
+        sys.exit(1)
+
+    print("[INFO] Camera opened successfully. Building UI...")
+
+    cv2.namedWindow("Tuner")
+    
+    # [FIX] Draw a slightly larger dummy image with text to ensure the window manager renders it correctly
+    dummy_bg = np.zeros((50, 500), dtype=np.uint8)
+    cv2.putText(dummy_bg, "Trackbars for tuning are below.", (10, 30), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    cv2.imshow("Tuner", dummy_bg)
+    cv2.waitKey(1)
+
+    # Perception Tuners
+    cv2.createTrackbar("Src Top Width", "Tuner", 240, 640, nothing)
+    cv2.createTrackbar("Src Top Y", "Tuner", 260, 480, nothing)
+    cv2.createTrackbar("CLAHE Limit", "Tuner", 30, 100, nothing) 
+    cv2.createTrackbar("Threshold Block", "Tuner", 31, 101, nothing) 
+    cv2.createTrackbar("Threshold C", "Tuner", 15, 50, nothing)
+    cv2.createTrackbar("EMA Alpha", "Tuner", 55, 100, nothing) 
+    
+    # Control Tuners
+    cv2.createTrackbar("Base Speed", "Tuner", 50, 100, nothing)
+    cv2.createTrackbar("Stanley K", "Tuner", 12, 50, nothing) 
+    cv2.createTrackbar("Stanley Ks", "Tuner", 20, 100, nothing) 
+    cv2.createTrackbar("Divider Safe PX", "Tuner", 130, 300, nothing)
+    cv2.createTrackbar("Edge Safe PX", "Tuner", 100, 300, nothing)
+
+    tracker = HybridLaneTracker()
+    controller = Controller()
+
+    print("[INFO] Starting tracking loop. Press 'q' in any window to quit.")
+
+    is_live = (cap.get(cv2.CAP_PROP_FRAME_COUNT) <= 0)
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            
+            if not ret: 
+                if is_live:
+                    print("[WARNING] Frame dropped from live camera. Exiting loop.")
+                    break
+                else:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0) 
+                    continue
+                
+            frame = cv2.resize(frame, (640, 480))
+
+            try:
+                t_width = cv2.getTrackbarPos("Src Top Width", "Tuner")
+                t_y = cv2.getTrackbarPos("Src Top Y", "Tuner")
+                clahe_lim = max(0.1, cv2.getTrackbarPos("CLAHE Limit", "Tuner") / 10.0)
+                
+                th_block = cv2.getTrackbarPos("Threshold Block", "Tuner")
+                th_block = max(3, th_block if th_block % 2 != 0 else th_block + 1)
+                
+                th_c = cv2.getTrackbarPos("Threshold C", "Tuner")
+                
+                tracker.EMA_ALPHA = cv2.getTrackbarPos("EMA Alpha", "Tuner") / 100.0
+                controller.base_speed = cv2.getTrackbarPos("Base Speed", "Tuner")
+                controller.stanley.k = cv2.getTrackbarPos("Stanley K", "Tuner") / 10.0
+                controller.stanley.ks = cv2.getTrackbarPos("Stanley Ks", "Tuner") / 100.0
+                controller.guard.DIVIDER_SAFE_PX = cv2.getTrackbarPos("Divider Safe PX", "Tuner")
+                controller.guard.EDGE_SAFE_PX = cv2.getTrackbarPos("Edge Safe PX", "Tuner")
+            except cv2.error:
+                t_width, t_y, clahe_lim, th_block, th_c = 240, 260, 3.0, 31, 15
+
+            # --- BEV Transform ---
+            src_pts = np.float32([[320-t_width//2, t_y], [320+t_width//2, t_y], [40, 450], [600, 450]])
+            dst_pts = np.float32([[150, 0], [490, 0], [150, 480], [490, 480]])
+            M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+            warped = cv2.warpPerspective(frame, M, (640, 480))
+
+            # --- Image Processing ---
+            lab = cv2.cvtColor(warped, cv2.COLOR_BGR2LAB)
+            clahe = cv2.createCLAHE(clipLimit=clahe_lim, tileGridSize=(8, 8))
+            L = clahe.apply(lab[:, :, 0])
+            
+            binary = cv2.adaptiveThreshold(L, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                           cv2.THRESH_BINARY_INV, th_block, th_c)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
+
+            # --- Tracking ---
+            sl, sr, dbg = tracker.update(binary)
+            target_x, anchor = tracker.get_target_x(y_eval=400.0)
+            
+            # Calculate heading
+            heading_rad = 0.0
+            def _lane_heading(fit, y): return math.atan2(np.polyval(fit, y - 50) - np.polyval(fit, y), 50)
+            if sl is not None and sr is not None:
+                heading_rad = (_lane_heading(sl, 400) + _lane_heading(sr, 400)) / 2.0
+            elif sl is not None: heading_rad = _lane_heading(sl, 400)
+            elif sr is not None: heading_rad = _lane_heading(sr, 400)
+
+            conf = 1.0 if (sl is not None and sr is not None) else 0.5 if (sl is not None or sr is not None) else 0.0
+
+            perc_res = PerceptionResult(
+                warped_binary=binary, lane_dbg=dbg, sl=sl, sr=sr, 
+                target_x=target_x, anchor=anchor, confidence=conf, 
+                lane_width_px=tracker.estimated_lane_width, 
+                curvature=tracker.get_curvature(400.0), heading_rad=heading_rad)
+
+            # --- Control ---
+            ctrl_res = controller.compute(perc_res, velocity_ms=0.5)
+
+            # --- Visual Debug ---
+            cv2.putText(dbg, f"Steer: {ctrl_res.steer_angle_deg:+.1f} deg", (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(dbg, f"PWM: {ctrl_res.speed_pwm:.0f}", (10, 60), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(dbg, f"Anchor: {ctrl_res.anchor}", (10, 90), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            
+            tx = int(np.clip(target_x, 0, 639))
+            cv2.line(dbg, (tx, 380), (tx, 420), (0, 255, 255), 2)
+
+            cv2.polylines(frame, [src_pts.astype(np.int32)], True, (0,0,255), 2)
+
+            cv2.imshow("Original", frame)
+            cv2.imshow("Lane Tracking BEV", dbg)
+            
+            cv2.imshow("Tuner", dummy_bg)
+
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+                
+    finally:
+        # [FIX] Ensures hardware releases lock on camera even if code crashes.
+        cap.release()
+        cv2.destroyAllWindows()
+        print("[INFO] Cleaned up camera resources and closed windows.")
+
+if __name__ == "__main__":
+    main()

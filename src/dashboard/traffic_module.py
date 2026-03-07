@@ -19,10 +19,7 @@ import math
 import numpy as np
 import cv2
 from dataclasses import dataclass, field
-from typing import List
-
-import os
-# removed qt_qpa to prevent plugin crash
+from typing import List, Tuple
 
 try:
     from ultralytics import YOLO
@@ -37,21 +34,32 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
+class Detection:
+    """
+    Represents a single YOLO detection optimized for the Dashboard's camera-depth logic.
+    """
+    label: str
+    confidence: float
+    bbox: Tuple[int, int, int, int] # (x1, y1, x2, y2)
+    bbox_height: int                # Used by Dashboard to estimate distance
+
+@dataclass
 class TrafficResult:
     """
     Single output produced by TrafficDecisionEngine.process().
 
-    state           : primary driving command for the control layer.
-    reason          : human-readable string for the dashboard.
-    speed_multiplier: applied to base_speed in Controller.compute().
-    zone_mode       : "CITY" | "HIGHWAY"   — governs speed floors.
-    parking_state   : "NONE"|"SEEK"|"ENTER"|"WAIT"|"EXIT"|"DONE"
-    steer_bias      : additional steer angle (deg) requested by parking FSM.
+    state            : primary driving command for the control layer.
+    reason           : human-readable string for the dashboard.
+    speed_multiplier : applied to base_speed in Controller.compute().
+    zone_mode        : "CITY" | "HIGHWAY"   — governs speed floors.
+    parking_state    : "NONE"|"SEEK"|"ENTER"|"WAIT"|"EXIT"|"DONE"
+    steer_bias       : additional steer angle (deg) requested by parking FSM.
     pedestrian_blocking : True when pedestrian is holding us at a crosswalk.
-    light_status    : dashboard string for the traffic-light colour.
-    active_labels   : all YOLO class names seen this frame.
-    yolo_debug_frame: BGR frame with detection overlays.
-    sign_approach_m : estimated approach distance to nearest sign (for dash)
+    light_status     : dashboard string for the traffic-light colour.
+    active_labels    : all YOLO class names seen this frame.
+    detections       : List of Detection objects (with bbox_height) for ADAS depth logic.
+    yolo_debug_frame : BGR frame with detection overlays.
+    sign_approach_m  : estimated distance to nearest active sign (for dash)
     """
     state: str              # SYS_GO | SYS_STOP | SYS_SLOW | SYS_APPROACH | SYS_LANE_CHANGE_LEFT | SYS_LIMIT
     reason: str
@@ -62,12 +70,13 @@ class TrafficResult:
     pedestrian_blocking: bool = False
     light_status: str = "NONE"
     active_labels: List[str] = field(default_factory=list)
+    detections: List[Detection] = field(default_factory=list) # <-- ADDED FOR CAMERA DEPTH ADAS
     yolo_debug_frame: np.ndarray = None
     sign_approach_m: float = 99.0   # estimated distance to nearest active sign
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Threaded YOLO detector (unchanged from original, minus imports)
+# Threaded YOLO detector
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ThreadedYOLODetector:
@@ -81,32 +90,31 @@ class ThreadedYOLODetector:
         self.model         = None
 
         if _YOLO_AVAILABLE:
-            self.model_path_used = self._resolve_model_path(model_path)
-            
-        self.worker = None
+            resolved = self._resolve_model_path(model_path)
+            if resolved:
+                try:
+                    import torch
+                    _orig = torch.load
+                    def _patched(*args, **kwargs):
+                        kwargs['weights_only'] = False
+                        return _orig(*args, **kwargs)
+                    torch.load = _patched
+                    try:
+                        self.model = YOLO(resolved)
+                        self.yolo_ok = True
+                        self.model_path_used = resolved
+                        print(f"[YOLO] Loaded: {resolved}")
+                    finally:
+                        torch.load = _orig
+                except Exception as e:
+                    print(f"[YOLO] Load failed: {e}")
+            else:
+                print(f"[YOLO] '{model_path}' not found — detection disabled.")
 
-    def _load_model(self):
-        """Load PyTorch YOLO model (must be called post-fork inside the worker thread)."""
-        if not _YOLO_AVAILABLE or not self.model_path_used:
-            return False
-            
-        try:
-            import torch
-            _orig = torch.load
-            def _patched(*args, **kwargs):
-                kwargs['weights_only'] = False
-                return _orig(*args, **kwargs)
-            torch.load = _patched
-            try:
-                self.model = YOLO(self.model_path_used)
-                self.yolo_ok = True
-                print(f"[YOLO] Loaded post-fork: {self.model_path_used}")
-                return True
-            finally:
-                torch.load = _orig
-        except Exception as e:
-            print(f"[YOLO] Load failed: {e}")
-            return False
+        self.worker = threading.Thread(target=self._run, daemon=True)
+        self.worker.start()
+
+    @staticmethod
     def _resolve_model_path(model_path):
         import os
         candidates = [
@@ -121,27 +129,12 @@ class ThreadedYOLODetector:
         return None
 
     def _run(self):
-        # 1. Load the model directly in the worker thread (post-fork safe context)
-        self._load_model()
-        
-        # 2. Warmup pass: run inference on a blank frame
-        # memory immediately — avoids first-frame miss due to cold-start latency
-        if self.model is not None:
-            try:
-                blank = np.zeros((480, 640, 3), dtype=np.uint8)
-                self.model.predict(source=blank, conf=0.20, verbose=False)
-                print("[YOLO] Warmup pass complete.")
-            except Exception as e:
-                print(f"[YOLO] Warmup failed: {e}")
-
         while self.running:
             try:
                 frame = self.frame_queue.get(timeout=0.1)
                 if self.model is None:
-                    # No model: return empty detections so dashboard shows "no detections" not stale data
-                    self.result_queue.put([])
                     continue
-                results = self.model.predict(source=frame, conf=0.20, verbose=False)
+                results = self.model.predict(source=frame, conf=0.25, verbose=False)
                 detections = []
                 for box in results[0].boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
@@ -149,42 +142,16 @@ class ThreadedYOLODetector:
                     conf  = box.conf[0].item()
                     detections.append({"label": label, "confidence": conf,
                                        "bbox": (x1, y1, x2, y2)})
-                # Flush existing results to push the newest one immediately
-                while not self.result_queue.empty():
-                    try:
-                        self.result_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                self.result_queue.put(detections)
+                if not self.result_queue.full():
+                    self.result_queue.put(detections)
             except queue.Empty:
                 pass
             except Exception as e:
-                print(f"[YOLO] Detection error: {e}")
-
-    def restart_worker(self):
-        """Re-start the inference thread in the current process (call this post-fork)."""
-        # Terminate old worker if still alive
-        self.running = False
-        if hasattr(self, 'worker') and self.worker.is_alive():
-            self.worker.join(timeout=1.0)
-        # Drain queues
-        for q in (self.frame_queue, self.result_queue):
-            while not q.empty():
-                try: q.get_nowait()
-                except: break
-        # Re-start
-        self.running = True
-        self.worker = threading.Thread(target=self._run, daemon=True)
-        self.worker.start()
+                print(f"YOLO Thread Error: {e}")
 
     def update_frame(self, frame):
-        # Drop stale frames to process ONLY the newest frame
-        while not self.frame_queue.empty():
-            try:
-                self.frame_queue.get_nowait()
-            except queue.Empty:
-                break
-        self.frame_queue.put(frame.copy())
+        if not self.frame_queue.full():
+            self.frame_queue.put(frame.copy())
 
     def get_detections(self):
         if not self.result_queue.empty():
@@ -268,7 +235,7 @@ class CollisionPredictor:
             for tid, data in self.history.items():
                 if data["label"] == lbl:
                     dist = abs(data["cx"] - cx)
-                    if dist < best_dist:   # BUG-05: pick CLOSEST, not first match
+                    if dist < best_dist:
                         best_dist = dist
                         matched   = tid
             if not matched:
@@ -360,13 +327,11 @@ class ParkingStateMachine:
     speed_mult < 0 is not used (no reverse); EXIT re-uses slow forward.
     steer_bias_deg is added to the controller's steering output.
     """
-    # Time limits for each phase (seconds)
     SEEK_TIMEOUT   = 6.0    # if no clear spot found, park anyway after 6 s
     ENTER_DURATION = 2.0    # drive forward into spot
     WAIT_DURATION  = 3.0    # mandatory stop in spot (competition requirement)
     EXIT_DURATION  = 2.5    # drive forward out of spot
 
-    # Steer bias angles (degrees)
     ENTER_STEER =  22.0     # right steer to angle into spot
     EXIT_STEER  = -18.0     # left steer to pull out of spot
 
@@ -375,7 +340,6 @@ class ParkingStateMachine:
         self._ts    = 0.0
 
     def trigger(self, now):
-        """Call when a parking sign is detected."""
         if self.state == "NONE":
             self.state = "TRIGGERED"
             self._ts   = now
@@ -385,14 +349,10 @@ class ParkingStateMachine:
         self._ts   = 0.0
 
     def update(self, dets, frame, now):
-        """
-        Returns (parking_state: str, speed_mult: float, steer_bias_deg: float).
-        """
         if self.state == "NONE" or self.state == "DONE":
             return "NONE", 1.0, 0.0
 
         if self.state == "TRIGGERED":
-            # Brief delay to slow down before seeking
             if now - self._ts > 0.3:
                 self.state = "SEEK"
                 self._ts   = now
@@ -423,15 +383,10 @@ class ParkingStateMachine:
                 self._ts   = now
             return "EXIT", 0.28, self.EXIT_STEER
 
-        # DONE: hand back control
         return "NONE", 1.0, 0.0
 
     @staticmethod
     def _right_lane_clear(dets, frame):
-        """
-        Returns True when the right side of the frame is clear of obstacles
-        (indicating an available parking spot).
-        """
         if frame is None:
             return True
         h, w = frame.shape[:2]
@@ -450,28 +405,6 @@ class ParkingStateMachine:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TrafficDecisionEngine:
-    """
-    Processes one frame per call and returns a TrafficResult.
-
-    Sign / rule coverage
-    --------------------
-    Traffic Light : Red (stop) / Yellow (slow) / Green (go)
-    Stop sign     : 3-second halt then cooldown
-    Crosswalk     : slow; stop if pedestrian detected at crossing
-    Priority      : skip intersection stop (right-of-way)
-    Highway Entry : switch zone_mode -> HIGHWAY
-    Highway Exit  : switch zone_mode -> CITY
-    No-Entry      : commit SYS_STOP; planner should reroute
-    One-Way       : informational log; routing handled by A* graph
-    Roundabout    : slow on entry; routing handled by A* graph (CCW)
-    Speed-limit   : reduce speed_multiplier to match sign value
-    Parking       : trigger ParkingStateMachine
-    Obstacle/car  : lane-change LEFT if on dashed segment (caller provides
-                    line_type); just follow on continuous segment
-    Pedestrian    : TTC-based emergency stop (CollisionPredictor)
-                    + crosswalk-specific wait (PedestrianCrosswalkMonitor)
-    """
-
     def __init__(self, threaded_detector):
         self.threaded_detector  = threaded_detector
         self.state              = "SYS_GO"
@@ -489,6 +422,7 @@ class TrafficDecisionEngine:
         self.tl_fsm     = TrafficLightStateMachine()
         self.col_pred   = CollisionPredictor()
         self.ped_xwalk  = PedestrianCrosswalkMonitor()
+        self.parking_fsm = ParkingStateMachine()
 
         # Zone tracking
         self._zone_mode = "CITY"   # "CITY" | "HIGHWAY"
@@ -496,10 +430,6 @@ class TrafficDecisionEngine:
     # ── Internal helpers ─────────────────────────────────────────────────────
 
     def _is_glowing(self, frame, x1, y1, x2, y2):
-        """
-        Analyse the HSV colour mass inside a traffic-light bounding box.
-        Returns ("RED"|"YELLOW"|"GREEN"|"NONE", pixel_mass).
-        """
         fh, fw = frame.shape[:2]
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(fw, x2), min(fh, y2)
@@ -508,12 +438,9 @@ class TrafficDecisionEngine:
         crop = frame[y1:y2, x1:x2]
         hsv  = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
 
-        # Red (wraps around hue wheel)
         mr1 = cv2.inRange(hsv, np.array([0,  50, 150]), np.array([10, 255, 255]))
         mr2 = cv2.inRange(hsv, np.array([170, 50, 150]), np.array([180,255,255]))
-        # Yellow
         my  = cv2.inRange(hsv, np.array([15, 100, 150]), np.array([35, 255, 255]))
-        # Green
         mg  = cv2.inRange(hsv, np.array([50,  50, 150]), np.array([90, 255, 255]))
 
         red    = cv2.countNonZero(cv2.bitwise_or(mr1, mr2))
@@ -521,7 +448,6 @@ class TrafficDecisionEngine:
         green  = cv2.countNonZero(mg)
         MIN_MASS = 30
 
-        # Highest mass wins, with a minimum threshold
         best = max(red, yellow, green)
         if best < MIN_MASS:
             return "NONE", best
@@ -532,11 +458,6 @@ class TrafficDecisionEngine:
         return "GREEN", green
 
     def _dist_cat(self, box_h):
-        """Classify distance from bounding-box height.
-        FAR      : box_h < 30  px  — sign detected at long range, pre-decelerate
-        APPROACH : 30–70 px      — sign coming up, sign-specific slow/stop fires
-        HALT     : > 70 px       — right at sign, full action
-        """
         if box_h < 30:
             return "FAR"
         elif box_h < 70:
@@ -544,27 +465,11 @@ class TrafficDecisionEngine:
         return "HALT"
 
     def _approx_dist_m(self, box_h):
-        """Very rough distance estimate from bbox height (calibrate on track).
-        Assumes a sign of real height ~0.30 m and focal length ~400 px.
-        dist = (real_h * focal) / box_h  => 0.30*400 / box_h = 120 / box_h
-        """
         return 120.0 / max(box_h, 1)
 
     # ── Main process call ─────────────────────────────────────────────────────
 
     def process(self, frame, line_type="UNKNOWN"):
-        """
-        Parameters
-        ----------
-        frame      : BGR camera frame (640×480).
-        line_type  : "DASHED" | "CONTINUOUS" | "UNKNOWN"
-                     Injected from map_planner so we know whether
-                     overtaking is permitted.
-
-        Returns
-        -------
-        TrafficResult
-        """
         fh, fw = frame.shape[:2]
         dbg    = frame.copy()
         now    = time.time()
@@ -574,7 +479,6 @@ class TrafficDecisionEngine:
         self.threaded_detector.update_frame(frame)
         dets = self.threaded_detector.get_detections()
 
-        # ── Priority queue helpers ────────────────────────────────────────────
         pri     = 99
         p_state = "SYS_GO"
         p_res   = "CLEAR PATH"
@@ -584,44 +488,48 @@ class TrafficDecisionEngine:
             if pr < pri:
                 pri, p_state, p_res = pr, st, rs
 
-        # ── Collision predictor (TTC) ─────────────────────────────────────────
+        # Collision predictor
         crit = self.col_pred.update_and_predict(dets, dt)
         if crit:
             commit(1, "SYS_STOP", "COLLISION IMMINENT")
 
-        # ── Stop-sign FSM: release after 3 s ─────────────────────────────────
+        # Stop-sign FSM cooldown
         if self.stop_timer > 0.0:
             if now - self.stop_timer >= 3.0:
                 self.stop_timer = 0.0
                 self.stop_cd    = now + 5.0
 
-        # ── Pedestrian at crosswalk ───────────────────────────────────────────
+        # Pedestrian crosswalk check
         ped_blocking, ped_reason = self.ped_xwalk.update(dets, fh, fw, now)
         if ped_blocking:
             commit(1, "SYS_STOP", ped_reason)
 
         light_st = "NONE"
         act_lbl  = []
-        _nearest_sign_dist_m = 99.0   # for TrafficResult.sign_approach_m
+        out_dets = []  # For passing explicit box data to the dashboard
+        _nearest_sign_dist_m = 99.0
 
-        # ── Per-detection logic ───────────────────────────────────────────────
         for d in dets:
             lbl       = d["label"]
             lbl_lower = lbl.lower()
             x1, y1, x2, y2 = d["bbox"]
             box_h = y2 - y1
             dist_cat = self._dist_cat(box_h)
-
-            # Estimate approach distance for dashboard
             approx_m = self._approx_dist_m(box_h)
 
-            # Draw detection on debug frame
+            # Append structured detection for the Dashboard ADAS
+            out_dets.append(Detection(
+                label=lbl,
+                confidence=d["confidence"],
+                bbox=(x1, y1, x2, y2),
+                bbox_height=box_h
+            ))
+
             cv2.rectangle(dbg, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(dbg, f"{lbl} ~{approx_m:.1f}m", (x1, y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
             act_lbl.append(lbl)
 
-            # ── Traffic light ─────────────────────────────────────────────────
             if "traffic" in lbl_lower and "light" in lbl_lower:
                 clr, mass = self._is_glowing(frame, x1, y1, x2, y2)
                 dist = self._dist_cat(box_h)
@@ -636,73 +544,51 @@ class TrafficDecisionEngine:
                     commit(3, "SYS_SLOW", "YELLOW LIGHT")
                 elif fsm_st == "LIGHT_GREEN_GO":
                     light_st = "[GREEN] GO"
-                continue   # done with this detection
+                continue
 
-            # ── APPROACH PRE-DECELERATION ───────────────────────────────────────
-            # Any Actionable sign detected at FAR range triggers gentle deceleration
-            # (0.85×) so the car has time to slow before the sign action zone.
-            is_obstacle = any(k in lbl_lower for k in ("car", "pedestrian", "person", "obstacle", "roadblock"))
-            is_info_sign = any(k in lbl_lower for k in ("highway", "motorway", "priority", "right-of-way", "give-way", "one-way", "oneway"))
-            is_action_sign = not (is_obstacle or is_info_sign)
-            
-            if is_action_sign and dist_cat == "FAR":
+            is_sign = not ("car" in lbl_lower or "pedestrian" in lbl_lower
+                           or "person" in lbl_lower or "obstacle" in lbl_lower
+                           or "roadblock" in lbl_lower)
+            if is_sign and dist_cat == "FAR":
                 commit(8, "SYS_APPROACH", f"APPROACHING {lbl}")
                 _nearest_sign_dist_m = min(_nearest_sign_dist_m, approx_m)
-                continue   # no further sign logic until APPROACH/HALT range
+                continue
 
-            # Track distance ONLY for actionable signs that require deceleration
-            if is_action_sign:
+            if is_sign:
                 _nearest_sign_dist_m = min(_nearest_sign_dist_m, approx_m)
 
-            # Skip tiny detections for all non-light signs
             if box_h < 30:
                 continue
 
-            # ── Stop sign ─────────────────────────────────────────────────────
             if any(k in lbl_lower for k in ("stop-sign", "stop_sign",)) or lbl_lower == "stop":
                 if now > self.stop_cd and now > self._priority_until:
                     if self.stop_timer == 0.0:
                         self.stop_timer = now
                     commit(2, "SYS_STOP", "STOP SIGN (3 s)")
 
-            # ── Crosswalk sign ────────────────────────────────────────────────
-            elif any(k in lbl_lower for k in ("crosswalk", "pedestrian_crossing",
-                                               "zebra")):
+            elif any(k in lbl_lower for k in ("crosswalk", "pedestrian_crossing", "zebra")):
                 commit(4, "SYS_SLOW", "CROSSWALK AHEAD")
 
-            # ── Priority / right-of-way ───────────────────────────────────────
-            elif any(k in lbl_lower for k in ("priority", "right-of-way",
-                                               "priority-road", "give-way")):
-                # Right-of-way: no stop required at next intersection
+            elif any(k in lbl_lower for k in ("priority", "right-of-way", "priority-road", "give-way")):
                 self._priority_until = now + 8.0
-                # No commit needed — car continues at SYS_GO
 
-            # ── Highway entry ─────────────────────────────────────────────────
-            elif any(k in lbl_lower for k in ("highway-entry", "highway_entry",
-                                               "highway_start", "motorway-entry", "highway")):
+            elif any(k in lbl_lower for k in ("highway-entry", "highway_entry", "highway_start", "motorway-entry")):
                 self._zone_mode = "HIGHWAY"
                 commit(5, "SYS_GO", "HIGHWAY MODE ON")
 
-            # ── Highway exit ──────────────────────────────────────────────────
-            elif any(k in lbl_lower for k in ("highway-exit", "highway_exit",
-                                               "highway_end", "motorway-exit")):
+            elif any(k in lbl_lower for k in ("highway-exit", "highway_exit", "highway_end", "motorway-exit")):
                 self._zone_mode = "CITY"
                 commit(5, "SYS_GO", "HIGHWAY MODE OFF")
 
-            # ── No-entry ─────────────────────────────────────────────────────
-            elif any(k in lbl_lower for k in ("no-entry", "no_entry",
-                                               "no entry", "do-not-enter")):
+            elif any(k in lbl_lower for k in ("no-entry", "no_entry", "no entry", "do-not-enter")):
                 commit(1, "SYS_STOP", "NO-ENTRY SIGN — REROUTE")
 
-            # ── One-way (informational — routing handled by A* graph) ─────────
             elif any(k in lbl_lower for k in ("one-way", "oneway", "one_way")):
-                pass   # A* graph edge directions already enforce one-way
+                pass
 
-            # ── Roundabout ────────────────────────────────────────────────────
             elif any(k in lbl_lower for k in ("roundabout",)):
                 commit(4, "SYS_SLOW", "ROUNDABOUT ENTRY")
 
-            # ── Speed-limit signs (BUG-09: exact class name match) ────────────
             elif lbl_lower in {
                 "speed_30", "speed_50", "speed_80",
                 "speed-limit-30", "speed-limit-50", "speed-limit-80",
@@ -714,69 +600,61 @@ class TrafficDecisionEngine:
             ):
                 commit(4, "SYS_LIMIT", "SPEED LIMIT ZONE")
 
+            elif any(k in lbl_lower for k in ("parking", "park-sign", "park_sign", "car-park")):
+                self.parking_fsm.trigger(now)
 
-            # ── Parking sign ──────────────────────────────────────────────────
-            elif any(k in lbl_lower for k in ("parking", "park-sign", "park_sign",
-                                               "car-park")):
-                pass # Handled deeply by BehaviorController Priority Mission 3
-
-            # ── Pedestrian on Road (Universal Fallback) ───────────────────────
-            elif lbl_lower in ("pedestrian", "person"):
-                # Stop if pedestrian's bounding box is wide and low enough to be in the lane
-                in_path = (x1 < fw * 0.75 and x2 > fw * 0.25 and y2 > fh * 0.40)
-                if in_path:
-                    commit(1, "SYS_STOP", "PEDESTRIAN ON ROAD")
-
-            # ── Static obstacles / other cars ────────────────────────────────
             elif lbl_lower in ("car", "closed-road-stand", "roadblock", "obstacle"):
                 in_path = (x1 < fw * 0.80 and x2 > fw * 0.20 and y2 > fh * 0.60)
                 if in_path:
                     if line_type == "DASHED":
-                        # Dashed line → overtake allowed
                         commit(3, "SYS_LANE_CHANGE_LEFT", "OVERTAKING OBSTACLE")
                     elif line_type == "CONTINUOUS":
-                        # Continuous line → must follow, not overtake
                         commit(3, "SYS_SLOW", "TAILING OBSTACLE (CONT LINE)")
                     else:
-                        # Unknown: default to lane-change (conservative)
                         commit(3, "SYS_LANE_CHANGE_LEFT", "EVADING OBSTACLE")
 
-        # ── Apply active stop-sign hold ───────────────────────────────────────
         if self.stop_timer > 0.0 and now - self.stop_timer < 3.0:
             commit(2, "SYS_STOP", "STOP SIGN (holding)")
 
-        # ── Override: active red light beats everything else ──────────────────
         if "RED" in light_st:
             commit(1, "SYS_STOP", "RED LIGHT")
 
-        # Parking is no longer managed by TrafficDecisionEngine, handled by BehaviorController.
+        park_state, park_speed_mult, park_steer = self.parking_fsm.update(
+            dets, frame, now
+        )
+        if park_state not in ("NONE", "DONE"):
+            if park_state == "WAIT":
+                commit(1, "SYS_STOP", "PARKING — IN SPOT")
+            else:
+                commit(2, "SYS_SLOW", f"PARKING — {park_state}")
 
         self.state  = p_state
         self.reason = p_res
 
-        # ── Speed multiplier ──────────────────────────────────────────────────
         mult = 1.0
         if self.state == "SYS_STOP":
             mult = 0.0
         elif self.state in ("SYS_SLOW", "SYS_LANE_CHANGE_LEFT"):
             mult = 0.55
         elif self.state == "SYS_APPROACH":
-            mult = 0.85   # gentle pre-decel on sign approach
+            mult = 0.85
         elif self.state == "SYS_LIMIT":
             mult = 0.75
 
-        # Parking is no longer managed by TrafficDecisionEngine.
+        if park_state not in ("NONE", "DONE"):
+            mult = park_speed_mult
 
         return TrafficResult(
             state            = self.state,
             reason           = self.reason,
             speed_multiplier = mult,
             zone_mode        = self._zone_mode,
-            parking_state    = "NONE",
-            steer_bias       = 0.0,
+            parking_state    = park_state,
+            steer_bias       = park_steer,
             pedestrian_blocking = ped_blocking,
             light_status     = light_st,
             active_labels    = act_lbl,
+            detections       = out_dets,    # Detections bundled with dimensions for Dashboard mapping
             yolo_debug_frame = dbg,
             sign_approach_m  = _nearest_sign_dist_m,
         )

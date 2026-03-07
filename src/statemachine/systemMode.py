@@ -62,7 +62,7 @@ class SystemMode(Enum):
         "mode": "auto",
         "camera": {
             "process": {
-                "enabled": True,
+                "enabled": False,
             },
             "thread": {
                 "resolution": "480p",

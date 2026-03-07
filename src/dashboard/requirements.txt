@@ -1,0 +1,9 @@
+opencv-python
+numpy
+pillow
+networkx
+svglib
+reportlab
+pyserial
+picamera2
+

@@ -124,21 +124,12 @@ class threadCamera(ThreadWithStop):
             mainRequest = self.camera.capture_array("main")
             serialRequest = self.camera.capture_array("lores")  # Will capture an array that can be used by OpenCV library
 
-            # FIX: Camera is configured with "XRGB8888" which returns a 4-channel BGRA array.
-            # cv2.COLOR_BGRA2BGR correctly drops the padding channel and keeps the
-            # native BGR order — no channel swapping occurs, so colours are accurate.
-            if mainRequest.ndim == 3 and mainRequest.shape[2] == 4:
-                main_bgr = cv2.cvtColor(mainRequest, cv2.COLOR_BGRA2BGR)
-            else:
-                # Fallback: array is already BGR (3-channel), use as-is
-                main_bgr = mainRequest.copy()
-
             if self.recording == True:
-                self.video_writer.write(main_bgr) # type: ignore
+                self.video_writer.write(mainRequest) # type: ignore
 
             serialRequest = cv2.cvtColor(serialRequest, cv2.COLOR_YUV2BGR_I420) # type: ignore
 
-            _, mainEncodedImg = cv2.imencode(".jpg", main_bgr) # type: ignore
+            _, mainEncodedImg = cv2.imencode(".jpg", mainRequest) # type: ignore
             _, serialEncodedImg = cv2.imencode(".jpg", serialRequest) # type: ignore
 
             mainEncodedImageData = base64.b64encode(mainEncodedImg).decode("utf-8") # type: ignore
@@ -149,18 +140,6 @@ class threadCamera(ThreadWithStop):
 
             self.mainCameraSender.send(mainEncodedImageData)
             self.serialCameraSender.send(serialEncodedImageData)
-            
-            # Fast-path for Autonomous driving brain (raw numpy array)
-            if "Vision" in self.queuesList:
-                raw_bgr = cv2.resize(main_bgr, (640, 480))
-                # Clear queue if full to always provide latest frame
-                if self.queuesList["Vision"].full():
-                    try:
-                        self.queuesList["Vision"].get_nowait()
-                    except Exception:
-                        pass
-                self.queuesList["Vision"].put(raw_bgr)
-                
         except Exception as e:
             print(f"\033[1;97m[ Camera ] :\033[0m \033[1;91mERROR\033[0m - {e}")
 
@@ -188,12 +167,7 @@ class threadCamera(ThreadWithStop):
             config = self.camera.create_preview_configuration(
                 buffer_count=1,
                 queue=False,
-                # FIX: Use "XRGB8888" instead of "RGB888".
-                # picamera2's "RGB888" stores pixels in BGR memory order, which caused
-                # a double channel-swap and produced a blue tint.
-                # "XRGB8888" delivers a true BGRA array; dropping the alpha with
-                # COLOR_BGRA2BGR then gives a correct BGR image for OpenCV.
-                main={"format": "XRGB8888", "size": (2048, 1080)},
+                main={"format": "RGB888", "size": (2048, 1080)},
                 lores={"size": (512, 270)},
                 encode="lores",
             )
