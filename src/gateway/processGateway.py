@@ -47,6 +47,9 @@ class processGateway(WorkerProcess):
         self.logger.info(f"SocketIO Telemetry Gateway started on port {self.port}!")
         self.socketio.run(app, host="0.0.0.0", port=self.port, allow_unsafe_werkzeug=True)
 
+    def _init_threads(self):
+        pass
+
     def run(self):
         self.server_thread = threading.Thread(target=self._run_socketio, daemon=True)
         self.server_thread.start()

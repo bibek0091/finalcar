@@ -57,6 +57,9 @@ class processDashboard(WorkerProcess):
         except Exception as e:
             self.logger.error(f"Dashboard server failed to start: {e}")
 
+    def _init_threads(self):
+        pass
+
     def run(self):
         """ Override run to start the server thread before the main loop """
         self.server_thread = threading.Thread(target=self._run_server, daemon=True)

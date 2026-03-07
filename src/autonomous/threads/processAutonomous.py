@@ -108,7 +108,7 @@ class processAutonomous(WorkerProcess):
         imu.start()
         
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        default_model = os.path.join(script_dir, "..", "..", "..", "lane_detection", "lane_detection", "best.pt")
+        default_model = os.path.join(script_dir, "..", "utils", "models", "best.pt")
         try:
             yolo_detector = ThreadedYOLODetector(default_model)
             traffic_engine = TrafficDecisionEngine(yolo_detector)
@@ -143,9 +143,20 @@ class processAutonomous(WorkerProcess):
                     self._semaphores_dict = dict(sem_recv)
 
                 # 2. Get Camera Frame
-                frame = self.cameraSubscriber.receive()
-                if frame is None or not isinstance(frame, np.ndarray):
+                frame_data = self.cameraSubscriber.receive()
+                if frame_data is None or not isinstance(frame_data, str):
                     time.sleep(0.01)
+                    continue
+                
+                try:
+                    img_bytes = base64.b64decode(frame_data)
+                    np_arr = np.frombuffer(img_bytes, np.uint8)
+                    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                except Exception as e:
+                    self.logger.warning(f"[Camera] Base64 Decode Error: {e}")
+                    continue
+                    
+                if frame is None:
                     continue
                 
                 now = time.time()
