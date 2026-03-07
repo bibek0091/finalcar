@@ -124,11 +124,14 @@ class threadCamera(ThreadWithStop):
             mainRequest = self.camera.capture_array("main")
             serialRequest = self.camera.capture_array("lores")  # Will capture an array that can be used by OpenCV library
 
-            # Use exact proven conversion logic from the tempfile backup script
+            # FIX: Camera is configured with "XRGB8888" which returns a 4-channel BGRA array.
+            # cv2.COLOR_BGRA2BGR correctly drops the padding channel and keeps the
+            # native BGR order — no channel swapping occurs, so colours are accurate.
             if mainRequest.ndim == 3 and mainRequest.shape[2] == 4:
                 main_bgr = cv2.cvtColor(mainRequest, cv2.COLOR_BGRA2BGR)
             else:
-                main_bgr = cv2.cvtColor(mainRequest, cv2.COLOR_RGB2BGR)
+                # Fallback: array is already BGR (3-channel), use as-is
+                main_bgr = mainRequest.copy()
 
             if self.recording == True:
                 self.video_writer.write(main_bgr) # type: ignore
@@ -185,7 +188,12 @@ class threadCamera(ThreadWithStop):
             config = self.camera.create_preview_configuration(
                 buffer_count=1,
                 queue=False,
-                main={"format": "RGB888", "size": (2048, 1080)},
+                # FIX: Use "XRGB8888" instead of "RGB888".
+                # picamera2's "RGB888" stores pixels in BGR memory order, which caused
+                # a double channel-swap and produced a blue tint.
+                # "XRGB8888" delivers a true BGRA array; dropping the alpha with
+                # COLOR_BGRA2BGR then gives a correct BGR image for OpenCV.
+                main={"format": "XRGB8888", "size": (2048, 1080)},
                 lores={"size": (512, 270)},
                 encode="lores",
             )
