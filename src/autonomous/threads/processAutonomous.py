@@ -177,26 +177,24 @@ class processAutonomous(WorkerProcess):
                     bev_dbg = annotate_bev(
                         lane_result, control_output, t_res, behav_out,
                     )
-                    _, buf = cv2.imencode('.jpg', bev_dbg, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                    # Convert BGR→RGB before JPEG encoding (browsers render JPEGs as RGB)
+                    _, buf = cv2.imencode('.jpg', cv2.cvtColor(bev_dbg, cv2.COLOR_BGR2RGB), [cv2.IMWRITE_JPEG_QUALITY, 60])
                     b64 = base64.b64encode(buf).decode('ascii')
                     if bev_q.full():
                         try: bev_q.get_nowait()
                         except: pass
                     bev_q.put_nowait(b64)
 
-                # YOLO annotated frame
+                # YOLO annotated frame — use the debug frame already built by TrafficDecisionEngine
+                # (it is built directly on the BGR camera frame with bboxes drawn)
                 yolo_q = self.queuesList.get("DashYOLO")
-                if yolo_q is not None and self.traffic_engine:
-                    yolo_frame = frame.copy()
-                    if hasattr(self.yolo_detector, 'active_detections'):
-                        for det in self.yolo_detector.active_detections:
-                            x1, y1, x2, y2 = det['bbox']
-                            label = det.get('label', '')
-                            conf = det.get('confidence', 0)
-                            cv2.rectangle(yolo_frame, (x1,y1), (x2,y2), (0,255,0), 2)
-                            cv2.putText(yolo_frame, f"{label} {conf:.1f}", (x1,y1-5),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
-                    _, buf = cv2.imencode('.jpg', yolo_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                if yolo_q is not None:
+                    if t_res is not None and getattr(t_res, 'yolo_debug_frame', None) is not None:
+                        yolo_frame = t_res.yolo_debug_frame
+                    else:
+                        yolo_frame = frame.copy()
+                    # Convert BGR→RGB before JPEG encoding (browsers render JPEGs as RGB)
+                    _, buf = cv2.imencode('.jpg', cv2.cvtColor(yolo_frame, cv2.COLOR_BGR2RGB), [cv2.IMWRITE_JPEG_QUALITY, 65])
                     b64 = base64.b64encode(buf).decode('ascii')
                     if yolo_q.full():
                         try: yolo_q.get_nowait()
