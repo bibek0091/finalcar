@@ -235,13 +235,13 @@ class processDashboard(WorkerProcess):
 
     def _run_calibration(self, start_after=True):
         """
-        Real 5-minute calibration sequence.
-        Phase 1 — IMU  : Poll BNO055 CALIB_STAT via I2C until SYS≥2 & GYR≥2 & MAG≥2 (max 5 min)
-        Phase 2 — Camera: Wait until Vision queue delivers frames (max 30 s)
-        Phase 3 — Lane  : Wait until DashBEV queue delivers BEV frames (max 30 s)
-        Phase 4 — YOLO  : Wait until DashYOLO queue delivers annotated frames (max 30 s)
+        Real 5-second calibration sequence.
+        Phase 1 — IMU   : Poll BNO055 CALIB_STAT via I2C (max 2 s)
+        Phase 2 — Camera: Wait until Vision queue delivers frames (max 1 s)
+        Phase 3 — Lane  : Wait until DashBEV queue delivers BEV frames (max 1 s)
+        Phase 4 — YOLO  : Wait until DashYOLO queue delivers annotated frames (max 1 s)
         """
-        TOTAL_SECONDS = 300  # 5 minutes max for IMU
+        TOTAL_SECONDS = 2  # 2 minutes max for IMU
         IMU_ADDR      = 0x28
         CALIB_STAT    = 0x35
 
@@ -311,10 +311,10 @@ class processDashboard(WorkerProcess):
                         break
 
                 if timeout:
-                    self.socketio.emit('log_line', '[IMU] 5-min timeout — forcing PASS')
+                    self.socketio.emit('log_line', '[IMU] timeout — forcing PASS')
                     break
 
-                time.sleep(2.0)
+                time.sleep(0.5)
 
             if aborted(): return
             emit('imu', '\u2705 IMU done', 30)
@@ -324,20 +324,22 @@ class processDashboard(WorkerProcess):
             cam_start = time.time()
             cam_frames = 0
             cam_q = self.queuesList.get('Vision')
-            while not aborted() and (time.time() - cam_start) < 30:
+            while not aborted() and (time.time() - cam_start) < 1.0:
                 if cam_q and not cam_q.empty():
                     try: cam_q.get_nowait(); cam_frames += 1
                     except: pass
+                if cam_frames > 2:
+                    break
                 elapsed = time.time() - cam_start
                 fps_est = cam_frames / max(elapsed, 0.1)
-                pct = 30 + int((elapsed / 30) * 15)
+                pct = 30 + int((elapsed / 1.0) * 15)
                 emit('camera', f'\U0001f4f7 Camera: {cam_frames} frames received ({fps_est:.1f} fps)', pct)
-                time.sleep(1.0)
+                time.sleep(0.2)
 
             if aborted(): return
             cam_ok = cam_frames > 0
             cam_status = "\u2705" if cam_ok else "\u26a0 no frames"
-            self.socketio.emit('log_line', f'[Camera] {cam_frames} frames received in 30s {cam_status}')
+            self.socketio.emit('log_line', f'[Camera] {cam_frames} frames received {cam_status}')
             emit('camera', '\u2705 Camera done', 45)
 
             # ── Phase 3: Lane (BEV) ───────────────────────────────────────
@@ -345,18 +347,20 @@ class processDashboard(WorkerProcess):
             lane_start = time.time()
             bev_frames = 0
             bev_q = self.queuesList.get('DashBEV')
-            while not aborted() and (time.time() - lane_start) < 30:
+            while not aborted() and (time.time() - lane_start) < 1.0:
                 if bev_q and not bev_q.empty():
                     try: bev_q.get_nowait(); bev_frames += 1
                     except: pass
+                if bev_frames > 2:
+                    break
                 elapsed = time.time() - lane_start
-                pct = 45 + int((elapsed / 30) * 15)
+                pct = 45 + int((elapsed / 1.0) * 15)
                 emit('lane', f'\U0001f6e3 BEV frames: {bev_frames} ({int(elapsed)}s)', pct)
-                time.sleep(1.0)
+                time.sleep(0.2)
 
             if aborted(): return
             lane_status = "\u2705" if bev_frames > 0 else "\u26a0"
-            self.socketio.emit('log_line', f'[Lane] {bev_frames} BEV frames in 30s {lane_status}')
+            self.socketio.emit('log_line', f'[Lane] {bev_frames} BEV frames {lane_status}')
             emit('lane', '\u2705 Lane done', 60)
 
             # ── Phase 4: YOLO ─────────────────────────────────────────────
@@ -364,18 +368,20 @@ class processDashboard(WorkerProcess):
             yolo_start = time.time()
             yolo_frames = 0
             yq = self.queuesList.get('DashYOLO')
-            while not aborted() and (time.time() - yolo_start) < 30:
+            while not aborted() and (time.time() - yolo_start) < 1.0:
                 if yq and not yq.empty():
                     try: yq.get_nowait(); yolo_frames += 1
                     except: pass
+                if yolo_frames > 2:
+                    break
                 elapsed = time.time() - yolo_start
-                pct = 60 + int((elapsed / 30) * 35)
+                pct = 60 + int((elapsed / 1.0) * 35)
                 emit('yolo', f'\U0001f3af YOLO frames: {yolo_frames} ({int(elapsed)}s)', pct)
-                time.sleep(1.0)
+                time.sleep(0.2)
 
             if aborted(): return
             yolo_status = "\u2705" if yolo_frames > 0 else "\u26a0"
-            self.socketio.emit('log_line', f'[YOLO] {yolo_frames} annotated frames in 30s {yolo_status}')
+            self.socketio.emit('log_line', f'[YOLO] {yolo_frames} annotated frames {yolo_status}')
             emit('yolo', '\u2705 YOLO done', 95)
 
             # ── Complete ──────────────────────────────────────────────────
@@ -415,7 +421,7 @@ class processDashboard(WorkerProcess):
         while self.running:
             try:
                 # BEV frame (base64 JPEG)
-                bev_q = self.queueList.get("DashBEV")
+                bev_q = self.queuesList.get("DashBEV")
                 if bev_q:
                     try:
                         frame_b64 = bev_q.get_nowait()
@@ -424,7 +430,7 @@ class processDashboard(WorkerProcess):
                         pass
 
                 # YOLO frame (base64 JPEG)
-                yolo_q = self.queueList.get("DashYOLO")
+                yolo_q = self.queuesList.get("DashYOLO")
                 if yolo_q:
                     try:
                         frame_b64 = yolo_q.get_nowait()
@@ -433,7 +439,7 @@ class processDashboard(WorkerProcess):
                         pass
 
                 # Decision data (JSON dict)
-                dec_q = self.queueList.get("DashDecision")
+                dec_q = self.queuesList.get("DashDecision")
                 if dec_q:
                     try:
                         decision = dec_q.get_nowait()
@@ -460,7 +466,7 @@ class processDashboard(WorkerProcess):
 
     def stream_console_logs(self):
         """Monitor the Log queue and emit messages to frontend."""
-        log_queue = self.queueList.get("Log")
+        log_queue = self.queuesList.get("Log")
         if not log_queue:
             return
 

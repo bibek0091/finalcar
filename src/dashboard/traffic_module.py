@@ -81,31 +81,32 @@ class ThreadedYOLODetector:
         self.model         = None
 
         if _YOLO_AVAILABLE:
-            resolved = self._resolve_model_path(model_path)
-            if resolved:
-                try:
-                    import torch
-                    _orig = torch.load
-                    def _patched(*args, **kwargs):
-                        kwargs['weights_only'] = False
-                        return _orig(*args, **kwargs)
-                    torch.load = _patched
-                    try:
-                        self.model = YOLO(resolved)
-                        self.yolo_ok = True
-                        self.model_path_used = resolved
-                        print(f"[YOLO] Loaded: {resolved}")
-                    finally:
-                        torch.load = _orig
-                except Exception as e:
-                    print(f"[YOLO] Load failed: {e}")
-            else:
-                print(f"[YOLO] '{model_path}' not found — detection disabled.")
+            self.model_path_used = self._resolve_model_path(model_path)
+            
+        self.worker = None
 
-        self.worker = threading.Thread(target=self._run, daemon=True)
-        self.worker.start()
-
-    @staticmethod
+    def _load_model(self):
+        """Load PyTorch YOLO model (must be called post-fork inside the worker thread)."""
+        if not _YOLO_AVAILABLE or not self.model_path_used:
+            return False
+            
+        try:
+            import torch
+            _orig = torch.load
+            def _patched(*args, **kwargs):
+                kwargs['weights_only'] = False
+                return _orig(*args, **kwargs)
+            torch.load = _patched
+            try:
+                self.model = YOLO(self.model_path_used)
+                self.yolo_ok = True
+                print(f"[YOLO] Loaded post-fork: {self.model_path_used}")
+                return True
+            finally:
+                torch.load = _orig
+        except Exception as e:
+            print(f"[YOLO] Load failed: {e}")
+            return False
     def _resolve_model_path(model_path):
         import os
         candidates = [
@@ -120,7 +121,10 @@ class ThreadedYOLODetector:
         return None
 
     def _run(self):
-        # Warmup pass: run inference on a blank frame so the model loads into
+        # 1. Load the model directly in the worker thread (post-fork safe context)
+        self._load_model()
+        
+        # 2. Warmup pass: run inference on a blank frame
         # memory immediately — avoids first-frame miss due to cold-start latency
         if self.model is not None:
             try:

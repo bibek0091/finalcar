@@ -83,14 +83,13 @@ class processAutonomous(WorkerProcess):
         self.controller = Controller()
         try:
             self.imu = IMUSensor()
-            self.imu.start()
-            self.logger.info("[Autonomous] IMU hardware listener started.")
+            # self.imu.start() is explicitly deferred until _init_threads() post-fork
         except Exception as e:
             self.logger.warning(f"[Autonomous] Failed to load IMU: {e}")
             self.imu = None
         
         # Determine model path unconditionally
-        model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "utils", "models", "best.pt"))
+        model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "utils", "best.pt"))
         
         try:
             self.yolo_detector = ThreadedYOLODetector(model_path)
