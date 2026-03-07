@@ -16,6 +16,13 @@ from src.utils.messages.allMessages import (
 )
 from src.statemachine.stateMachine import StateMachine
 
+import sys
+# Ensure root directory is in sys.path for hardware and lane_detection imports
+script_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.abspath(os.path.join(script_dir, "..", "..", ".."))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
 # Local Tempfile Physics Imports
 from lane_detection.lane_detector import LaneDetector
 from lane_detection.controller import Controller

@@ -234,14 +234,13 @@ def main():
         logger.warning(f"Skipping Gateway: {e}")
 
     dashboard_ready = Event()
+    dashboard_ready.set()  # Set immediately because processDashboard doesn't track this
     try:
         from src.dashboard.processDashboard import processDashboard
-        dashboard_process = processDashboard(queueList, logger, dashboard_ready, debugging=False)
+        dashboard_process = processDashboard(queueList, logger)
         allProcesses.append(dashboard_process)
-        allEvents.append(dashboard_ready)
     except Exception as e:
         logger.warning(f"Skipping Dashboard Flask Server: {e}")
-        dashboard_ready.set() 
 
     # ===================================== INITIALIZE NEW PROCESS_AUTONOMOUS ==========
     from src.autonomous.threads.processAutonomous import processAutonomous
