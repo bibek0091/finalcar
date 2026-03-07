@@ -143,7 +143,7 @@ class threadCamera(ThreadWithStop):
             
             # Fast-path for Autonomous driving brain (raw numpy array)
             if "Vision" in self.queuesList:
-                raw_bgr = cv2.cvtColor(mainRequest, cv2.COLOR_RGB2BGR)
+                raw_bgr = mainRequest.copy()  # Already BGR from BGR888 format
                 raw_bgr = cv2.resize(raw_bgr, (640, 480))
                 # Clear queue if full to always provide latest frame
                 if self.queuesList["Vision"].full():
@@ -180,7 +180,7 @@ class threadCamera(ThreadWithStop):
             config = self.camera.create_preview_configuration(
                 buffer_count=1,
                 queue=False,
-                main={"format": "RGB888", "size": (2048, 1080)},
+                main={"format": "BGR888", "size": (2048, 1080)},
                 lores={"size": (512, 270)},
                 encode="lores",
             )

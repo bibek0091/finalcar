@@ -517,6 +517,19 @@
         graphData = data;
         addLog(`Map loaded: ${Object.keys(data.nodes).length} nodes, ${data.edges.length} edges`);
         drawMap();
+        // Load saved signs from server
+        socket.emit('load_signs');
+      });
+
+      socket.on('signs_data', (data) => {
+        if (data && data.length > 0 && graphData) {
+          placedSigns = data.map(s => {
+            const n = graphData.nodes[s.node_id];
+            return { label: s.label, node_id: s.node_id, x: n ? n.x : 0, y: n ? n.y : 0 };
+          });
+          addLog(`Loaded ${placedSigns.length} saved signs`);
+          drawMap();
+        }
       });
 
       socket.on('bev_frame', (data) => {
@@ -642,11 +655,15 @@
     // Sign-Based Localization
     // ═══════════════════════════════════════════════════════════════════════
     function localizeBySign(detectedLabel) {
+      // Normalize: YOLO labels like 'stop sign' → 'stop', 'parking' etc.
+      const normalized = detectedLabel.toLowerCase().replace(/[\s_-]+/g, '');
       for (const sp of placedSigns) {
-        if (sp.label === detectedLabel && routeSet.has(sp.node_id)) {
+        const signNorm = sp.label.toLowerCase().replace(/[\s_-]+/g, '');
+        // Match if sign id is contained in the detected label or vice versa
+        if ((normalized.includes(signNorm) || signNorm.includes(normalized)) && routeSet.has(sp.node_id)) {
           carNode = sp.node_id;
           carXY = { x: sp.x, y: sp.y };
-          addLog(`📍 Car localized at node ${sp.node_id} (detected: ${detectedLabel})`);
+          addLog(`📍 Localized at node ${sp.node_id} (sign: ${sp.label}, detected: ${detectedLabel})`);
           drawMap();
           return;
         }

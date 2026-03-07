@@ -78,8 +78,11 @@ class processDashboard(WorkerProcess):
         # ── Graph & Localization ─────────────────────────────────────
         self.graph = get_graph()
         self.current_route = []
-        self.placed_signs = []  # [{label, node_id}]
         self.car_running = False
+
+        # Sign persistence — save/load placed signs to JSON file
+        self._signs_file = os.path.join(os.path.dirname(__file__), 'placed_signs.json')
+        self.placed_signs = self._load_signs()
 
         # ── Flask + SocketIO ─────────────────────────────────────────
         self.app = Flask(__name__)
@@ -127,6 +130,24 @@ class processDashboard(WorkerProcess):
         self.messagesAndVals.pop("Semaphores", None)
         self.subscribe()
 
+    def _load_signs(self):
+        """Load placed signs from JSON file."""
+        try:
+            if os.path.exists(self._signs_file):
+                with open(self._signs_file, 'r') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return []
+
+    def _save_signs(self):
+        """Save placed signs to JSON file."""
+        try:
+            with open(self._signs_file, 'w') as f:
+                json.dump(self.placed_signs, f, indent=2)
+        except Exception:
+            pass
+
     def _setup_websocket_handlers(self):
         """Setup WebSocket event handlers — both original and new dashboard."""
         # Original BFMC handlers
@@ -156,34 +177,50 @@ class processDashboard(WorkerProcess):
                 'label': data.get('label', ''),
                 'node_id': str(data.get('node_id', '')),
             })
+            self._save_signs()
+            self.socketio.emit('log_line', f"📌 Sign placed: {data.get('label', '')} at node {data.get('node_id', '')}")
 
         @self.socketio.on('clear_signs')
         def on_clear_signs():
             self.placed_signs.clear()
+            self._save_signs()
+            self.socketio.emit('log_line', '🗑 All signs cleared')
 
         @self.socketio.on('remove_sign')
         def on_remove_sign(data):
             nid = str(data.get('node_id', ''))
             self.placed_signs = [s for s in self.placed_signs if s['node_id'] != nid]
+            self._save_signs()
+            self.socketio.emit('log_line', f'❌ Sign removed from node {nid}')
+
+        @self.socketio.on('load_signs')
+        def on_load_signs():
+            self.socketio.emit('signs_data', self.placed_signs)
 
         @self.socketio.on('start_car')
         def on_start_car():
             self.car_running = True
-            # Switch state machine to AUTO mode (this is the valid transition)
+            # 1. Send KL:30 to enable engine (CRITICAL — serial handler gates all motor commands behind this)
+            if 'Klem' in self.sendMessages:
+                self.sendMessages['Klem']['obj'].send('30')
+            # 2. Switch state machine to AUTO mode
             self.stateMachine.request_mode("dashboard_auto_button")
-            # Also directly send speed command via message system
-            if 'SpeedMotor' in self.sendMessages:
-                self.sendMessages['SpeedMotor']['obj'].send('30')
-            self.socketio.emit('log_line', '▶ Car started (AUTO mode, speed:30)')
+            self.socketio.emit('log_line', '▶ Car started — KL:30 sent, AUTO mode active')
 
         @self.socketio.on('stop_car')
         def on_stop_car():
             self.car_running = False
-            # Send 0 speed first, then switch to STOP mode
+            # 1. Stop motors immediately
             if 'SpeedMotor' in self.sendMessages:
                 self.sendMessages['SpeedMotor']['obj'].send('0')
+            if 'SteerMotor' in self.sendMessages:
+                self.sendMessages['SteerMotor']['obj'].send('0')
+            # 2. Disable engine via KL:0
+            if 'Klem' in self.sendMessages:
+                self.sendMessages['Klem']['obj'].send('0')
+            # 3. Switch state machine to STOP mode
             self.stateMachine.request_mode("dashboard_stop_button")
-            self.socketio.emit('log_line', '■ Car stopped (STOP mode)')
+            self.socketio.emit('log_line', '■ Car stopped — KL:0 sent, STOP mode')
 
     def _start_background_tasks(self):
         """Start background monitoring tasks."""
