@@ -25,7 +25,14 @@ from src.dashboard.traffic_module import ThreadedYOLODetector, TrafficDecisionEn
 from src.autonomous.utils.behavior_controller import BehaviorController
 
 def annotate_bev(lane_result, control_output, t_res=None, behav_out=None):
-    dbg = lane_result.lane_dbg.copy()
+    raw = lane_result.lane_dbg
+    if raw is None:
+        raw = lane_result.warped_binary
+    if raw is None:
+        return np.zeros((480, 640, 3), dtype=np.uint8)
+    dbg = raw.copy()
+    if len(dbg.shape) == 2:  # grayscale -> BGR
+        dbg = cv2.cvtColor(dbg, cv2.COLOR_GRAY2BGR)
 
     def draw_poly(fit, color):
         if fit is None: return
@@ -54,7 +61,7 @@ def annotate_bev(lane_result, control_output, t_res=None, behav_out=None):
         
         y_offset = 100
         cv2.putText(dbg, "YOLO Detections:", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        for label in t_res.active_labels:
+        for label in getattr(t_res, 'active_labels', []) or []:
             y_offset += 20
             cv2.putText(dbg, f"- {label}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
 

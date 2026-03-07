@@ -159,18 +159,29 @@ class processDashboard(WorkerProcess):
         def on_clear_signs():
             self.placed_signs.clear()
 
+        @self.socketio.on('remove_sign')
+        def on_remove_sign(data):
+            nid = str(data.get('node_id', ''))
+            self.placed_signs = [s for s in self.placed_signs if s['node_id'] != nid]
+
         @self.socketio.on('start_car')
         def on_start_car():
             self.car_running = True
-            # Send KL:30 via the state machine
-            self.stateMachine.request_mode("dashboard_KL30_button")
-            self.socketio.emit('log_line', '▶ Car started (KL:30)')
+            # Switch state machine to AUTO mode (this is the valid transition)
+            self.stateMachine.request_mode("dashboard_auto_button")
+            # Also directly send speed command via message system
+            if 'SpeedMotor' in self.sendMessages:
+                self.sendMessages['SpeedMotor']['obj'].send('30')
+            self.socketio.emit('log_line', '▶ Car started (AUTO mode, speed:30)')
 
         @self.socketio.on('stop_car')
         def on_stop_car():
             self.car_running = False
-            self.stateMachine.request_mode("dashboard_KL15_button")
-            self.socketio.emit('log_line', '■ Car stopped (KL:15)')
+            # Send 0 speed first, then switch to STOP mode
+            if 'SpeedMotor' in self.sendMessages:
+                self.sendMessages['SpeedMotor']['obj'].send('0')
+            self.stateMachine.request_mode("dashboard_stop_button")
+            self.socketio.emit('log_line', '■ Car stopped (STOP mode)')
 
     def _start_background_tasks(self):
         """Start background monitoring tasks."""

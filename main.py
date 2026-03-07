@@ -93,9 +93,9 @@ queueList = {
     "Log": Queue(),
     "Vision": Queue(),       # Custom: Used by our YOLO script
     "Autonomous": Queue(),   # Custom: Used by our Brain script
-    "DashBEV": Queue(),      # Dashboard: BEV lane debug frames (base64)
-    "DashYOLO": Queue(),     # Dashboard: YOLO annotated frames (base64)
-    "DashDecision": Queue(), # Dashboard: Decision engine state (JSON)
+    "DashBEV": Queue(maxsize=2),      # Dashboard: BEV lane debug frames (base64)
+    "DashYOLO": Queue(maxsize=2),     # Dashboard: YOLO annotated frames (base64)
+    "DashDecision": Queue(maxsize=2), # Dashboard: Decision engine state (JSON)
 }
 logging = logging.getLogger()
 
