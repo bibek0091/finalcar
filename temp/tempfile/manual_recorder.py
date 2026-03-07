@@ -187,18 +187,20 @@ class ManualRecorder:
                     last_time = time.time()
                 continue
                 
-            # Manual Control state
-            self.current_pwm = 0.0
-            self.current_steer = 0.0
-            
-            if c == ord('w') or c == curses.KEY_UP:
+            # Manual Control state (Sticky constraints for SSH Terminals)
+            # Terminals only send the LAST held key. To drive and turn simultaneously,
+            # we make the arrows "adjust" the current persistent speed/steering.
+            if c == curses.KEY_UP:
                 self.current_pwm = self.base_speed_pwm
-            elif c == ord('s') or c == curses.KEY_DOWN:
+            elif c == curses.KEY_DOWN:
                 self.current_pwm = -self.base_speed_pwm
-            elif c == ord('a') or c == curses.KEY_LEFT:
+            elif c == curses.KEY_LEFT:
                 self.current_steer = -self.max_steer
-            elif c == ord('d') or c == curses.KEY_RIGHT:
+            elif c == curses.KEY_RIGHT:
                 self.current_steer = self.max_steer
+            elif c == ord(' '):  # SPACEBAR to instantly stop and center
+                self.current_pwm = 0.0
+                self.current_steer = 0.0
                 
             self.serial.set_speed(self.current_pwm)
             self.serial.set_steering(self.current_steer)
@@ -207,6 +209,7 @@ class ManualRecorder:
             if self.recording:
                 real_dt = now - last_time
                 yaw = self.imu.get_yaw() if self.imu else 0.0
+                # Only record state changes or keep recording steady state? Recording steady state is fine.
                 self.recorded_data.append((real_dt, self.current_steer, self.current_pwm, yaw))
                 
             last_time = now
