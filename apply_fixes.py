@@ -34,4 +34,22 @@ if os.path.exists(f3):
         with open(f3, "w") as f: f.write(code)
         print(f"Patched {f3}")
 
+# 4. Patch main.py (Headless QT Bypass)
+f4 = "main.py"
+if os.path.exists(f4):
+    with open(f4, "r") as f: code = f.read()
+    if "QT_QPA_PLATFORM" not in code:
+        code = code.replace("import psutil", "import psutil\n\nos.environ[\"QT_QPA_PLATFORM\"] = \"offscreen\"")
+        with open(f4, "w") as f: f.write(code)
+        print(f"Patched {f4}")
+
+# 5. Patch traffic_module.py (Headless QT Bypass)
+f5 = "src/dashboard/traffic_module.py"
+if os.path.exists(f5):
+    with open(f5, "r") as f: code = f.read()
+    if "QT_QPA_PLATFORM" not in code:
+        code = code.replace("try:\n    from ultralytics import YOLO", "import os\nos.environ[\"QT_QPA_PLATFORM\"] = \"offscreen\"\n\ntry:\n    from ultralytics import YOLO")
+        with open(f5, "w") as f: f.write(code)
+        print(f"Patched {f5}")
+
 print("All Pi-side fixes successfully applied!")

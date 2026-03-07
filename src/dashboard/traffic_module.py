@@ -21,6 +21,10 @@ import cv2
 from dataclasses import dataclass, field
 from typing import List
 
+import os
+# Force Headless QT backend for ultralytics/cv2
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 try:
     from ultralytics import YOLO
     _YOLO_AVAILABLE = True
