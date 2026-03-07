@@ -3,8 +3,7 @@ import time
 import os
 import psutil
 
-# FORCE HEADLESS QT ENVIRONMENT FOR RASPBERRY PI
-os.environ["QT_QPA_PLATFORM"] = "offscreen"
+# removed qt_qpa to prevent plugin crash
 
 # Automatically create the 'temp' directory if it's missing to prevent FileNotFoundError
 os.makedirs("temp", exist_ok=True)

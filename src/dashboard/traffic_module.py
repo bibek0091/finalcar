@@ -22,8 +22,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 import os
-# Force Headless QT backend for ultralytics/cv2
-os.environ["QT_QPA_PLATFORM"] = "offscreen"
+# removed qt_qpa to prevent plugin crash
 
 try:
     from ultralytics import YOLO
