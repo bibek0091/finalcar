@@ -115,24 +115,46 @@ class OvertakeStateMachine:
 # Parking state machine  (full parallel-parking sequence)
 # ══════════════════════════════════════════════════════════════════════════════
 
+import csv
+import os
+
 class ParkingSequenceFSM:
     """
-    Full parallel-parking sequence:
-      IDLE → SEEK → ENTER → WAIT → EXIT → DONE → IDLE
-
-    All timings use time.time() — no time.sleep() used anywhere.
+    CSV-driven parallel parking sequence.
+    Reads telemetry from the user's recorded manual run.
+    Timeline:
+      IDLE → PLAY_FORWARD (pulls in) → WAIT (3s) → PLAY_BACKWARD (backs out) → DONE → IDLE
     """
-    SEEK_TIMEOUT   = 6.0     # give up seeking after 6 s
-    SLOW_SPEED     = 0.30    # speed multiplier while seeking
-    ENTER_DURATION = 2.0
-    ENTER_STEER    = 22.0    # right steer into spot
     WAIT_DURATION  = 3.0     # mandatory stop in spot
-    EXIT_DURATION  = 2.5
-    EXIT_STEER     = -18.0   # left steer to pull out
+    CSV_PATH = r"C:\Users\p23mi\Documents\final_bfmc_stack\temp\tempfile\file.csv"
 
     def __init__(self):
         self.state = "IDLE"
         self._ts   = 0.0
+        self.play_data = []
+        self.play_idx = 0
+        self.loaded_csv = False
+
+    def _load_csv(self):
+        self.play_data = []
+        if not os.path.exists(self.CSV_PATH):
+            log.error(f"PARKING: Cannot find CSV file: {self.CSV_PATH}")
+            self.loaded_csv = False
+            return
+            
+        try:
+            with open(self.CSV_PATH, 'r') as f:
+                reader = csv.reader(f)
+                next(reader) # skip header
+                for row in reader:
+                    if len(row) >= 3:
+                        # (dt, steer, pwm)
+                        self.play_data.append((float(row[0]), float(row[1]), float(row[2])))
+            self.loaded_csv = True
+            log.info(f"PARKING: Loaded {len(self.play_data)} steps from CSV")
+        except Exception as e:
+            log.error(f"PARKING: CSV read error: {e}")
+            self.loaded_csv = False
 
     @property
     def active(self):
@@ -140,9 +162,15 @@ class ParkingSequenceFSM:
 
     def trigger(self, now: float):
         if self.state == "IDLE":
-            self.state = "SEEK"
-            self._ts   = now
-            log.info("PARKING: seek started")
+            self._load_csv()
+            if self.loaded_csv and len(self.play_data) > 0:
+                self.state = "PLAY_FORWARD"
+                self.play_idx = 0
+                self._ts = now
+                log.info("PARKING: Initiating Forward CSV Playback")
+            else:
+                log.warning("PARKING: Aborting (No CSV data)")
+                self.state = "DONE"
 
     def reset(self):
         self.state = "IDLE"
@@ -150,39 +178,55 @@ class ParkingSequenceFSM:
     def update(self, now: float, base_speed: float, spot_clear: bool = True):
         """
         Returns (speed_pwm_mult, steer_bias_deg, state_str).
-        Caller multiplies their base speed by speed_pwm_mult.
+        For CSV playback, we ignore the speed multiplier entirely and 
+        directly return the EXACT pwm and steer from the file.
+        The calling controller must pass these raw values straight to the hardware.
         """
         if self.state in ("IDLE", "DONE"):
             return 1.0, 0.0, "NONE"
 
         elapsed = now - self._ts
 
-        if self.state == "SEEK":
-            if spot_clear or elapsed > self.SEEK_TIMEOUT:
-                self.state = "ENTER"
-                self._ts   = now
-                log.info("PARKING: entering spot")
-            return self.SLOW_SPEED, 0.0, "SEEK"
-
-        if self.state == "ENTER":
-            if elapsed > self.ENTER_DURATION:
+        if self.state == "PLAY_FORWARD":
+            if self.play_idx < len(self.play_data):
+                dt, steer, pwm = self.play_data[self.play_idx]
+                
+                # Check if elapsed time matches the recorded dt for this step
+                if elapsed >= dt:
+                    self._ts = now  # Reset step timer
+                    self.play_idx += 1
+                    
+                # Return absolute raw PWM and absolute steer from CSV
+                return pwm, steer, "FORWARD_CSV"
+            else:
+                # Arrived in spot
                 self.state = "WAIT"
-                self._ts   = now
-                log.info("PARKING: in spot — waiting %.1fs", self.WAIT_DURATION)
-            return 0.20, self.ENTER_STEER, "ENTER"
+                self._ts = now
+                log.info(f"PARKING: Forward sequence complete. Waiting {self.WAIT_DURATION}s")
+                return 0.0, 0.0, "FORWARD_CSV"
 
         if self.state == "WAIT":
             if elapsed > self.WAIT_DURATION:
-                self.state = "EXIT"
-                self._ts   = now
-                log.info("PARKING: exiting spot")
+                self.state = "PLAY_BACKWARD"
+                self.play_idx = len(self.play_data) - 1
+                self._ts = now
+                log.info("PARKING: Initiating Reverse CSV Playback")
             return 0.0, 0.0, "WAIT"
 
-        if self.state == "EXIT":
-            if elapsed > self.EXIT_DURATION:
+        if self.state == "PLAY_BACKWARD":
+            if self.play_idx >= 0:
+                dt, steer, pwm = self.play_data[self.play_idx]
+                
+                if elapsed >= dt:
+                    self._ts = now
+                    self.play_idx -= 1
+                    
+                # To reverse out, we use the negative of the recorded PWM, but identical turning angle
+                return -pwm, steer, "REVERSE_CSV"
+            else:
                 self.state = "DONE"
-                log.info("PARKING: done, handing back to lane follow")
-            return 0.28, self.EXIT_STEER, "EXIT"
+                log.info("PARKING: Reverse sequence complete. Spot vacated.")
+                return 0.0, 0.0, "REVERSE_CSV"
 
         return 1.0, 0.0, "IDLE"
 
@@ -216,7 +260,7 @@ class BehaviorController:
 
     # ── Speed constants (PWM units, tunable) ────────────────────────────────
     CITY_SPEED_PWM     = 22.0   # ~20 cm/s at nominal calibration
-    HIGHWAY_SPEED_PWM  = 38.0   # ~40 cm/s
+    HIGHWAY_SPEED_PWM  = 28.6   # +30% speed
     APPROACH_SPEED_PWM = 16.0   # sign-approach decel floor
     SLOW_SPEED_PWM     = 14.0   # near crosswalk / roundabout entry
     MIN_SPEED_PWM      = 18.0   # absolute floor (prevents stall)
@@ -441,15 +485,15 @@ class BehaviorController:
             spot_clear = True  # TrafficResult.parking_state drives this in t_res
             if t_res.parking_state in ("SEEK",):
                 spot_clear = (t_res.parking_state != "SEEK")
-            speed_mult, steer_bias, park_label = self.parking_fsm.update(
+            raw_pwm, raw_steer, park_label = self.parking_fsm.update(
                 now, base_speed, spot_clear=spot_clear
             )
             if park_label == "DONE":
                 self.parking_fsm.reset()
                 return None
             return BehaviorOutput(
-                speed_pwm = base_speed * speed_mult,
-                steer_deg = base_steer + steer_bias,
+                speed_pwm = raw_pwm, # Direct PWM output from CSV
+                steer_deg = raw_steer, # Direct Absolute Steer from CSV
                 priority  = self.PRI_MISSION,
                 state     = f"PARKING_{park_label}",
                 reason    = f"PARKING — phase: {park_label}",
