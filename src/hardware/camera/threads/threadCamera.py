@@ -124,12 +124,15 @@ class threadCamera(ThreadWithStop):
             mainRequest = self.camera.capture_array("main")
             serialRequest = self.camera.capture_array("lores")  # Will capture an array that can be used by OpenCV library
 
+            # Convert Native PiCamera2 RGB to OpenCV BGR
+            main_bgr = cv2.cvtColor(mainRequest, cv2.COLOR_RGB2BGR)
+
             if self.recording == True:
-                self.video_writer.write(mainRequest) # type: ignore
+                self.video_writer.write(main_bgr) # type: ignore
 
             serialRequest = cv2.cvtColor(serialRequest, cv2.COLOR_YUV2BGR_I420) # type: ignore
 
-            _, mainEncodedImg = cv2.imencode(".jpg", mainRequest) # type: ignore
+            _, mainEncodedImg = cv2.imencode(".jpg", main_bgr) # type: ignore
             _, serialEncodedImg = cv2.imencode(".jpg", serialRequest) # type: ignore
 
             mainEncodedImageData = base64.b64encode(mainEncodedImg).decode("utf-8") # type: ignore
@@ -143,8 +146,7 @@ class threadCamera(ThreadWithStop):
             
             # Fast-path for Autonomous driving brain (raw numpy array)
             if "Vision" in self.queuesList:
-                raw_bgr = cv2.cvtColor(mainRequest, cv2.COLOR_RGB2BGR)
-                raw_bgr = cv2.resize(raw_bgr, (640, 480))
+                raw_bgr = cv2.resize(main_bgr, (640, 480))
                 # Clear queue if full to always provide latest frame
                 if self.queuesList["Vision"].full():
                     try:
