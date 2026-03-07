@@ -183,9 +183,9 @@ class processAutonomous(WorkerProcess):
                     yolo_frame = frame.copy()
                     if hasattr(self.yolo_detector, 'active_detections'):
                         for det in self.yolo_detector.active_detections:
-                            x1, y1, x2, y2 = int(det['x1']), int(det['y1']), int(det['x2']), int(det['y2'])
+                            x1, y1, x2, y2 = det['bbox']
                             label = det.get('label', '')
-                            conf = det.get('conf', 0)
+                            conf = det.get('confidence', 0)
                             cv2.rectangle(yolo_frame, (x1,y1), (x2,y2), (0,255,0), 2)
                             cv2.putText(yolo_frame, f"{label} {conf:.1f}", (x1,y1-5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
