@@ -9,6 +9,8 @@ import time
 import os
 import queue
 import logging
+import cv2
+import numpy as np
 from src.templates.workerprocess import WorkerProcess
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.messageHandlerSender import messageHandlerSender
@@ -20,6 +22,42 @@ from src.autonomous.utils.lane_detector import LaneDetector
 from src.autonomous.utils.controller import Controller
 from src.dashboard.traffic_module import ThreadedYOLODetector, TrafficDecisionEngine
 from src.autonomous.utils.behavior_controller import BehaviorController
+
+def annotate_bev(lane_result, control_output, t_res=None, behav_out=None):
+    dbg = lane_result.lane_dbg.copy()
+
+    def draw_poly(fit, color):
+        if fit is None: return
+        ys  = np.linspace(40,479,240).astype(np.float32)
+        xs  = np.clip(np.polyval(fit,ys),0,639).astype(np.float32)
+        pts = np.stack([xs,ys],axis=1).reshape(-1,1,2).astype(np.int32)
+        cv2.polylines(dbg,[pts],False,color,3,cv2.LINE_AA)
+
+    # Draw lane polynomials
+    draw_poly(lane_result.sl, (255, 80, 80))  # Left line
+    draw_poly(lane_result.sr, (80, 80, 255))  # Right line
+
+    # Target crosshair
+    yrow = int(lane_result.y_eval)
+    tx = max(4, min(636, int(lane_result.target_x)))
+    cv2.line(dbg, (tx-12, yrow), (tx+12, yrow), (0, 255, 255), 2, cv2.LINE_AA)
+    
+    # Motor annotations
+    steer_color = (100,255,100) if abs(control_output.steer_angle_deg)<15 else (100,100,255)
+    cv2.putText(dbg, f"STEER: {control_output.steer_angle_deg:+.1f} deg", (420, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, steer_color, 2)
+    cv2.putText(dbg, f"SPEED: {control_output.speed_pwm:.0f} PWM", (420, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 100), 2)
+    
+    if t_res is not None and behav_out is not None:
+        cv2.putText(dbg, f"STATE: {behav_out.state}", (420, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+        cv2.putText(dbg, f"ZONE: {behav_out.zone_mode}", (420, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 100, 255), 2)
+        
+        y_offset = 100
+        cv2.putText(dbg, "YOLO Detections:", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        for label in t_res.active_labels:
+            y_offset += 20
+            cv2.putText(dbg, f"- {label}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+
+    return dbg
 
 class processAutonomous(WorkerProcess):
     def __init__(self, queueList, logging_obj, ready_event=None, debugging=False):
@@ -117,3 +155,11 @@ class processAutonomous(WorkerProcess):
         # 5. Dispatch Motor Commands
         self.speedSender.send(str(int(final_speed)))
         self.steerSender.send(str(int(final_steer)))
+        
+        # 6. Optional: Render visualization window
+        try:
+            dbg_frame = annotate_bev(lane_result, control_output, t_res if self.traffic_engine else None, behav_out if self.behavior else None)
+            cv2.imshow("BFMC Semantic Brain", dbg_frame)
+            cv2.waitKey(1)
+        except Exception as e:
+            pass

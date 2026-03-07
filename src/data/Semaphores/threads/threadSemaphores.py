@@ -29,6 +29,10 @@ class threadSemaphores(ThreadWithStop):
     def _init_socket(self):
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Add REUSEPORT for Linux/Raspberry Pi
+            if hasattr(socket, 'SO_REUSEPORT'):
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
             self.sock.bind((self.udp_ip, self.udp_port))
             self.sock.setblocking(False)
             print(f"[Semaphores] Listening on UDP {self.udp_port}")
