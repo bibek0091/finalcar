@@ -184,16 +184,28 @@ class processAutonomous(WorkerProcess):
         self.speedSender.send(str(int(final_speed)))
         self.steerSender.send(str(int(final_steer)))
         
-        # 6. Stream to Dashboard (throttled to ~5 fps)
+        # 6. Generate Display Frames
+        bev_dbg = annotate_bev(lane_result, control_output, t_res, behav_out)
+        if t_res is not None and getattr(t_res, 'yolo_debug_frame', None) is not None:
+            yolo_frame = t_res.yolo_debug_frame
+        else:
+            yolo_frame = frame.copy()
+
+        # 7. Fast local OpenCV windows (for attached monitors / VNC)
+        try:
+            cv2.imshow("Lane Detection (BEV)", bev_dbg)
+            cv2.imshow("RoboCar Vision", cv2.resize(yolo_frame, (640, 480)))
+            cv2.waitKey(1)
+        except Exception as e:
+            pass  # Fail silently if running truly headless without X11
+
+        # 8. Stream to Dashboard (throttled to ~5 fps)
         self._dash_counter += 1
         if self._dash_counter % 6 == 0:  # every ~6 frames ≈ 5fps at 30fps input
             try:
-                # BEV debug frame
+                # Dispatch BEV debug frame
                 bev_q = self.queuesList.get("DashBEV")
                 if bev_q is not None:
-                    bev_dbg = annotate_bev(
-                        lane_result, control_output, t_res, behav_out,
-                    )
                     # Convert BGR→RGB before JPEG encoding (browsers render JPEGs as RGB)
                     _, buf = cv2.imencode('.jpg', cv2.cvtColor(bev_dbg, cv2.COLOR_BGR2RGB), [cv2.IMWRITE_JPEG_QUALITY, 60])
                     b64 = base64.b64encode(buf).decode('ascii')
@@ -202,14 +214,9 @@ class processAutonomous(WorkerProcess):
                         except: pass
                     bev_q.put_nowait(b64)
 
-                # YOLO annotated frame — use the debug frame already built by TrafficDecisionEngine
-                # (it is built directly on the BGR camera frame with bboxes drawn)
+                # Dispatch YOLO annotated frame
                 yolo_q = self.queuesList.get("DashYOLO")
                 if yolo_q is not None:
-                    if t_res is not None and getattr(t_res, 'yolo_debug_frame', None) is not None:
-                        yolo_frame = t_res.yolo_debug_frame
-                    else:
-                        yolo_frame = frame.copy()
                     # Convert BGR→RGB before JPEG encoding (browsers render JPEGs as RGB)
                     _, buf = cv2.imencode('.jpg', cv2.cvtColor(yolo_frame, cv2.COLOR_BGR2RGB), [cv2.IMWRITE_JPEG_QUALITY, 65])
                     b64 = base64.b64encode(buf).decode('ascii')
