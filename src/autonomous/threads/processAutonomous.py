@@ -89,7 +89,7 @@ class processAutonomous(WorkerProcess):
             self.imu = None
         
         # Determine model path unconditionally
-        model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "utils", "best.pt"))
+        model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "utils", "best.pt"))
         
         try:
             self.yolo_detector = ThreadedYOLODetector(model_path)
@@ -206,8 +206,8 @@ class processAutonomous(WorkerProcess):
                 # Dispatch BEV debug frame
                 bev_q = self.queuesList.get("DashBEV")
                 if bev_q is not None:
-                    # Convert BGR→RGB before JPEG encoding (browsers render JPEGs as RGB)
-                    _, buf = cv2.imencode('.jpg', cv2.cvtColor(bev_dbg, cv2.COLOR_BGR2RGB), [cv2.IMWRITE_JPEG_QUALITY, 60])
+                    # OpenCV's cv2.imencode natively handles BGR directly to JPEG bytes
+                    _, buf = cv2.imencode('.jpg', bev_dbg, [cv2.IMWRITE_JPEG_QUALITY, 60])
                     b64 = base64.b64encode(buf).decode('ascii')
                     if bev_q.full():
                         try: bev_q.get_nowait()
@@ -217,8 +217,8 @@ class processAutonomous(WorkerProcess):
                 # Dispatch YOLO annotated frame
                 yolo_q = self.queuesList.get("DashYOLO")
                 if yolo_q is not None:
-                    # Convert BGR→RGB before JPEG encoding (browsers render JPEGs as RGB)
-                    _, buf = cv2.imencode('.jpg', cv2.cvtColor(yolo_frame, cv2.COLOR_BGR2RGB), [cv2.IMWRITE_JPEG_QUALITY, 65])
+                    # OpenCV's cv2.imencode natively handles BGR directly to JPEG bytes
+                    _, buf = cv2.imencode('.jpg', yolo_frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
                     b64 = base64.b64encode(buf).decode('ascii')
                     if yolo_q.full():
                         try: yolo_q.get_nowait()
