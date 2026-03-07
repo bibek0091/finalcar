@@ -197,15 +197,54 @@ class processDashboard(WorkerProcess):
         def on_load_signs():
             self.socketio.emit('signs_data', self.placed_signs)
 
+        @self.socketio.on('calibrate')
+        def on_calibrate():
+            """Run IMU + camera calibration and report progress to frontend."""
+            def _do_calibration():
+                try:
+                    self.socketio.emit('calibration_status', {'step': 'imu', 'msg': '🔄 Calibrating IMU — hold still...', 'pct': 10})
+                    time.sleep(2.5)   # IMU bias settling (BNO055 needs ~2s)
+                    self.socketio.emit('calibration_status', {'step': 'camera', 'msg': '📷 Camera exposure settling...', 'pct': 40})
+                    time.sleep(1.5)   # Camera auto-exposure lock
+                    self.socketio.emit('calibration_status', {'step': 'lane', 'msg': '🛣 Lane finder warmup...', 'pct': 65})
+                    time.sleep(1.0)   # Lane detector first-frame warmup
+                    self.socketio.emit('calibration_status', {'step': 'yolo', 'msg': '🎯 YOLO detector ready check...', 'pct': 85})
+                    time.sleep(0.5)
+                    self.socketio.emit('calibration_status', {'step': 'done', 'msg': '✅ Calibration complete', 'pct': 100})
+                except Exception as e:
+                    self.socketio.emit('calibration_status', {'step': 'error', 'msg': f'❌ Calibration error: {e}', 'pct': 0})
+            threading.Thread(target=_do_calibration, daemon=True).start()
+
         @self.socketio.on('start_car')
         def on_start_car():
             self.car_running = True
-            # 1. Send KL:30 to enable engine (CRITICAL — serial handler gates all motor commands behind this)
-            if 'Klem' in self.sendMessages:
-                self.sendMessages['Klem']['obj'].send('30')
-            # 2. Switch state machine to AUTO mode
-            self.stateMachine.request_mode("dashboard_auto_button")
-            self.socketio.emit('log_line', '▶ Car started — KL:30 sent, AUTO mode active')
+            self.socketio.emit('log_line', '🔄 Calibrating sensors before start...')
+            def _calibrate_then_start():
+                try:
+                    # Step 1: IMU calibration
+                    self.socketio.emit('calibration_status', {'step': 'imu', 'msg': '🔄 IMU zero-bias calibration...', 'pct': 15})
+                    time.sleep(2.5)
+                    # Step 2: Camera exposure
+                    self.socketio.emit('calibration_status', {'step': 'camera', 'msg': '📷 Camera exposure lock...', 'pct': 40})
+                    time.sleep(1.5)
+                    # Step 3: Lane detector warmup
+                    self.socketio.emit('calibration_status', {'step': 'lane', 'msg': '🛣 Lane detector warmup...', 'pct': 65})
+                    time.sleep(1.0)
+                    # Step 4: YOLO ready
+                    self.socketio.emit('calibration_status', {'step': 'yolo', 'msg': '🎯 YOLO ready...', 'pct': 85})
+                    time.sleep(0.5)
+                    self.socketio.emit('calibration_status', {'step': 'done', 'msg': '✅ Ready — starting car', 'pct': 100})
+                    time.sleep(0.3)
+                    # Step 5: Send KL:30 to enable engine
+                    if 'Klem' in self.sendMessages:
+                        self.sendMessages['Klem']['obj'].send('30')
+                    # Step 6: Switch to AUTO mode
+                    self.stateMachine.request_mode("dashboard_auto_button")
+                    self.socketio.emit('log_line', '▶ Car started — KL:30 sent, AUTO mode active')
+                except Exception as e:
+                    self.socketio.emit('log_line', f'❌ Start failed: {e}')
+                    self.car_running = False
+            threading.Thread(target=_calibrate_then_start, daemon=True).start()
 
         @self.socketio.on('stop_car')
         def on_stop_car():
@@ -220,7 +259,14 @@ class processDashboard(WorkerProcess):
                 self.sendMessages['Klem']['obj'].send('0')
             # 3. Switch state machine to STOP mode
             self.stateMachine.request_mode("dashboard_stop_button")
+            self.socketio.emit('calibration_status', {'step': 'idle', 'msg': '', 'pct': 0})
             self.socketio.emit('log_line', '■ Car stopped — KL:0 sent, STOP mode')
+
+        @self.socketio.on('manual_speed')
+        def on_manual_speed(data):
+            if self.car_running and 'SpeedMotor' in self.sendMessages:
+                spd = max(0, min(100, int(data.get('speed', 0))))
+                self.sendMessages['SpeedMotor']['obj'].send(str(spd))
 
     def _start_background_tasks(self):
         """Start background monitoring tasks."""

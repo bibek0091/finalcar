@@ -120,12 +120,24 @@ class ThreadedYOLODetector:
         return None
 
     def _run(self):
+        # Warmup pass: run inference on a blank frame so the model loads into
+        # memory immediately — avoids first-frame miss due to cold-start latency
+        if self.model is not None:
+            try:
+                blank = np.zeros((480, 640, 3), dtype=np.uint8)
+                self.model.predict(source=blank, conf=0.20, verbose=False)
+                print("[YOLO] Warmup pass complete.")
+            except Exception as e:
+                print(f"[YOLO] Warmup failed: {e}")
+
         while self.running:
             try:
                 frame = self.frame_queue.get(timeout=0.1)
                 if self.model is None:
+                    # No model: return empty detections so dashboard shows "no detections" not stale data
+                    self.result_queue.put([])
                     continue
-                results = self.model.predict(source=frame, conf=0.25, verbose=False)
+                results = self.model.predict(source=frame, conf=0.20, verbose=False)
                 detections = []
                 for box in results[0].boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
@@ -143,7 +155,7 @@ class ThreadedYOLODetector:
             except queue.Empty:
                 pass
             except Exception as e:
-                print(f"YOLO Thread Error: {e}")
+                print(f"[YOLO] Detection error: {e}")
 
     def update_frame(self, frame):
         # Drop stale frames to process ONLY the newest frame

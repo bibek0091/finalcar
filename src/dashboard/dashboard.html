@@ -363,10 +363,176 @@
       font-size: 11px;
       cursor: pointer;
       font-family: 'Inter';
+      transition: background .15s;
     }
 
     .btn-sm:hover {
-      background: rgba(79, 195, 247, 0.2);
+      background: rgba(79, 195, 247, 0.22);
+    }
+
+    .btn-sm.active {
+      background: rgba(79, 195, 247, 0.28);
+      border-color: #4fc3f7;
+    }
+
+    /* ── Calibration overlay ─────────────────────────────── */
+    #calibOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(5, 8, 20, 0.88);
+      backdrop-filter: blur(6px);
+      z-index: 9999;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+    }
+
+    #calibOverlay.visible {
+      display: flex;
+    }
+
+    .calib-title {
+      font-size: 22px;
+      font-weight: 700;
+      background: linear-gradient(90deg, #4fc3f7, #7c4dff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .calib-msg {
+      font-size: 14px;
+      color: #8892b0;
+      min-height: 20px;
+    }
+
+    .calib-bar-bg {
+      width: 320px;
+      height: 8px;
+      background: rgba(255, 255, 255, .08);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .calib-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #4fc3f7, #7c4dff);
+      border-radius: 8px;
+      transition: width .4s ease;
+      width: 0%;
+    }
+
+    .calib-steps {
+      display: flex;
+      gap: 10px;
+    }
+
+    .calib-step {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, .05);
+      border: 1px solid rgba(255, 255, 255, .1);
+      color: #445;
+      transition: all .3s;
+    }
+
+    .calib-step.active {
+      background: rgba(79, 195, 247, .15);
+      border-color: #4fc3f7;
+      color: #4fc3f7;
+    }
+
+    .calib-step.done {
+      background: rgba(76, 175, 80, .12);
+      border-color: #4caf50;
+      color: #4caf50;
+    }
+
+    /* ── Nav extra controls ──────────────────────────────── */
+    .nav-controls {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      padding: 6px 10px;
+      background: rgba(0, 0, 0, .12);
+      border-top: 1px solid #1a2040;
+      flex-wrap: wrap;
+    }
+
+    .nav-sep {
+      width: 1px;
+      height: 18px;
+      background: #1e2a4a;
+      margin: 0 2px;
+    }
+
+    .speed-slider {
+      -webkit-appearance: none;
+      height: 4px;
+      border-radius: 2px;
+      background: linear-gradient(90deg, #4fc3f7, #7c4dff);
+      outline: none;
+      cursor: pointer;
+      width: 80px;
+    }
+
+    .speed-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #fff;
+      cursor: pointer;
+    }
+
+    .nav-lbl {
+      font-size: 11px;
+      color: #556b8a;
+    }
+
+    .sign-sidebar {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 32px;
+      width: 130px;
+      background: rgba(10, 14, 23, .85);
+      border-left: 1px solid #1e2a4a;
+      overflow-y: auto;
+      padding: 6px 0;
+      font-size: 11px;
+    }
+
+    .sign-sidebar-title {
+      padding: 4px 8px;
+      color: #445;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-size: 10px;
+    }
+
+    .sign-item {
+      padding: 3px 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, .04);
+      color: #8892b0;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .sign-item:hover {
+      background: rgba(79, 195, 247, .06);
+      color: #4fc3f7;
+    }
+
+    .map-panel-inner {
+      position: relative;
+      flex: 1;
+      display: flex;
+      overflow: hidden;
     }
   </style>
 </head>
@@ -389,6 +555,22 @@
     <span class="conn-label" id="connLabel">Connecting...</span>
   </div>
 
+  <!-- Calibration overlay -->
+  <div id="calibOverlay">
+    <div class="calib-title">⚙ Sensor Calibration</div>
+    <div class="calib-msg" id="calibMsg">Initializing...</div>
+    <div class="calib-bar-bg">
+      <div class="calib-bar-fill" id="calibBar"></div>
+    </div>
+    <div class="calib-steps">
+      <span class="calib-step" id="cstep-imu">IMU</span>
+      <span class="calib-step" id="cstep-camera">Camera</span>
+      <span class="calib-step" id="cstep-lane">Lane</span>
+      <span class="calib-step" id="cstep-yolo">YOLO</span>
+      <span class="calib-step" id="cstep-done">Ready</span>
+    </div>
+  </div>
+
   <!-- Grid -->
   <div class="grid">
 
@@ -407,20 +589,41 @@
     <div class="panel map-panel">
       <div class="panel-header">
         <div class="dot" style="background:#7c4dff"></div>Track Map
+        <span style="margin-left:auto;font-size:10px;color:#445" id="mapCarInfo"></span>
       </div>
-      <div class="panel-body">
+      <div class="map-panel-inner" id="mapPanelInner">
         <canvas id="mapCanvas"></canvas>
+        <!-- Sign sidebar -->
+        <div class="sign-sidebar" id="signSidebar">
+          <div class="sign-sidebar-title">📍 Placed Signs</div>
+          <div id="signSidebarList"></div>
+        </div>
       </div>
       <div class="sign-palette" id="signPalette"></div>
+      <!-- Nav controls bar -->
+      <div class="nav-controls">
+        <button class="btn-sm" onclick="navZoom(1.25)" title="Zoom in">➕</button>
+        <button class="btn-sm" onclick="navZoom(0.8)" title="Zoom out">➖</button>
+        <button class="btn-sm" onclick="navResetView()" title="Reset view">⊙</button>
+        <div class="nav-sep"></div>
+        <button class="btn-sm" id="trackBtn" onclick="toggleTrackCar()" title="Follow car">🚗 Track</button>
+        <div class="nav-sep"></div>
+        <span class="nav-lbl">💨 Speed:</span>
+        <input type="range" class="speed-slider" id="speedSlider" min="0" max="100" value="50"
+          oninput="manualSpeed(this.value)" title="Manual speed override">
+        <span class="nav-lbl" id="speedVal">50</span>
+        <div class="nav-sep"></div>
+        <button class="btn-sm" onclick="clearRoute()">Clear Route</button>
+        <button class="btn-sm" onclick="clearSigns()">Clear Signs</button>
+      </div>
       <div class="route-controls">
         <span>Start:</span><span class="val" id="routeStart">—</span>
         <span>End:</span><span class="val" id="routeEnd">—</span>
         <span>Steps:</span><span class="val" id="routeLen">—</span>
-        <button class="btn-sm" onclick="clearRoute()">Clear</button>
-        <button class="btn-sm" onclick="clearSigns()">Clear Signs</button>
+        <span>Signs:</span><span class="val" id="signsCount">0</span>
       </div>
-      <div class="map-info" id="mapInfo">Click to set start/end node. Select a sign then right-click to place.
-        Shift+right-click a sign to remove it.</div>
+      <div class="map-info" id="mapInfo">Click to set start/end node. Select sign → right-click to place.
+        Shift+right-click to remove.</div>
     </div>
 
     <!-- YOLO Panel -->
@@ -570,6 +773,33 @@
         }
       });
 
+      socket.on('calibration_status', (data) => {
+        const bar = document.getElementById('calibBar');
+        const msg = document.getElementById('calibMsg');
+        const steps = ['imu', 'camera', 'lane', 'yolo', 'done'];
+        if (data.step === 'idle') {
+          document.getElementById('calibOverlay').classList.remove('visible');
+          return;
+        }
+        bar.style.width = (data.pct || 0) + '%';
+        msg.textContent = data.msg || '';
+        // Mark steps as done/active
+        const curIdx = steps.indexOf(data.step);
+        steps.forEach((s, i) => {
+          const el = document.getElementById('cstep-' + s);
+          if (!el) return;
+          el.className = 'calib-step' + (i < curIdx ? ' done' : (i === curIdx ? ' active' : ''));
+        });
+        if (data.step === 'done') {
+          setTimeout(() => {
+            document.getElementById('calibOverlay').classList.remove('visible');
+            document.getElementById('btnStop').disabled = false;
+            setStatus('running', 'Running');
+          }, 600);
+        }
+        addLog(data.msg);
+      });
+
       socket.on('route_result', (data) => {
         route = data.route || [];
         routeSet = new Set(route);
@@ -583,13 +813,16 @@
     // Controls
     // ═══════════════════════════════════════════════════════════════════════
     function startCar() {
-      if (socket) {
-        socket.emit('start_car');
-        document.getElementById('btnStart').disabled = true;
-        document.getElementById('btnStop').disabled = false;
-        setStatus('running', 'Running');
-        addLog('▶ START command sent (KL:30)');
-      }
+      if (!socket) return;
+      // Show calibration overlay
+      const overlay = document.getElementById('calibOverlay');
+      overlay.classList.add('visible');
+      document.getElementById('btnStart').disabled = true;
+      document.getElementById('btnStop').disabled = true;
+      setStatus('running', 'Calibrating...');
+      addLog('🔄 Calibration started — hold car still');
+      // Emit start — backend does calibration then starts
+      socket.emit('start_car');
     }
 
     function stopCar() {
@@ -597,9 +830,39 @@
         socket.emit('stop_car');
         document.getElementById('btnStart').disabled = false;
         document.getElementById('btnStop').disabled = true;
+        document.getElementById('calibOverlay').classList.remove('visible');
         setStatus('idle', 'Stopped');
         addLog('■ STOP command sent');
       }
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    // Navigation controls
+    // ───────────────────────────────────────────────────────────────
+    let mapScale = 1.0;
+    let trackCar = false;
+
+    function navZoom(factor) {
+      mapScale = Math.max(0.3, Math.min(5, mapScale * factor));
+      drawMap();
+    }
+
+    function navResetView() {
+      mapScale = 1.0;
+      drawMap();
+    }
+
+    function toggleTrackCar() {
+      trackCar = !trackCar;
+      const btn = document.getElementById('trackBtn');
+      btn.classList.toggle('active', trackCar);
+      btn.textContent = trackCar ? '🚗 Tracking' : '🚗 Track';
+      if (trackCar) addLog('📡 Car tracking enabled');
+    }
+
+    function manualSpeed(val) {
+      document.getElementById('speedVal').textContent = val;
+      if (socket) socket.emit('manual_speed', { speed: parseInt(val) });
     }
 
     function setStatus(state, text) {
