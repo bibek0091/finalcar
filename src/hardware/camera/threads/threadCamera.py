@@ -124,8 +124,8 @@ class threadCamera(ThreadWithStop):
             mainRequest = self.camera.capture_array("main")
             serialRequest = self.camera.capture_array("lores")  # Will capture an array that can be used by OpenCV library
 
-            # Convert Native PiCamera2 RGB to OpenCV BGR
-            main_bgr = cv2.cvtColor(mainRequest, cv2.COLOR_RGB2BGR)
+            # Camera is now natively configured to output BGR888 directly from hardware
+            main_bgr = mainRequest
 
             if self.recording == True:
                 self.video_writer.write(main_bgr) # type: ignore
@@ -182,7 +182,7 @@ class threadCamera(ThreadWithStop):
             config = self.camera.create_preview_configuration(
                 buffer_count=1,
                 queue=False,
-                main={"format": "RGB888", "size": (2048, 1080)},
+                main={"format": "BGR888", "size": (2048, 1080)},
                 lores={"size": (512, 270)},
                 encode="lores",
             )
