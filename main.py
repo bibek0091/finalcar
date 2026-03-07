@@ -150,15 +150,7 @@ try:
 except Exception as e:
     logging.warning(f"Skipping Gateway: {e}")
 
-# 2. Start the Vision Process (YOLO)
-try:
-    from src.autonomous.threads.processVision import processVision
-    vision_process = processVision(queueList, logging)
-    allProcesses.append(vision_process)
-except Exception as e:
-    logging.warning(f"Skipping Vision: {e}")
-
-# 3. Start the Autonomous Process (The Brain)
+# 2. Start the Autonomous Process (The Brain)
 from src.autonomous.threads.processAutonomous import processAutonomous
 autonomous_process = processAutonomous(queueList, logging)
 allProcesses.append(autonomous_process)

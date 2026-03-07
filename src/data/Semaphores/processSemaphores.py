@@ -10,9 +10,11 @@ class processSemaphores(WorkerProcess):
     Manages the thread for listening to UDP 5007 semaphore broadcasts
     and posting the traffic light states to shared memory.
     """
-    def __init__(self, queueList):
-        super(processSemaphores, self).__init__(queueList)
+    def __init__(self, queueList, logging, ready_event=None, debugging=False):
+        super(processSemaphores, self).__init__(queueList, ready_event=ready_event)
         self.queuesList = queueList
+        self.logging = logging
+        self.debugging = debugging
 
     def _init_threads(self):
         """Initializes the Semaphores listening thread."""

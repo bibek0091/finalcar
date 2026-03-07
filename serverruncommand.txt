@@ -1,0 +1,6 @@
+cd ~/finalcar/Computer
+python3 src/servers/carsAndSemaphoreStreamSIM/udpStreamSIM.py
+
+
+cd ~/finalcar/Computer
+python3 src/servers/trafficCommunicationServer/TrafficCommunication.py

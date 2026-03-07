@@ -140,6 +140,19 @@ class threadCamera(ThreadWithStop):
 
             self.mainCameraSender.send(mainEncodedImageData)
             self.serialCameraSender.send(serialEncodedImageData)
+            
+            # Fast-path for Autonomous driving brain (raw numpy array)
+            if "Vision" in self.queuesList:
+                raw_bgr = cv2.cvtColor(mainRequest, cv2.COLOR_RGB2BGR)
+                raw_bgr = cv2.resize(raw_bgr, (640, 480))
+                # Clear queue if full to always provide latest frame
+                if self.queuesList["Vision"].full():
+                    try:
+                        self.queuesList["Vision"].get_nowait()
+                    except Exception:
+                        pass
+                self.queuesList["Vision"].put(raw_bgr)
+                
         except Exception as e:
             print(f"\033[1;97m[ Camera ] :\033[0m \033[1;91mERROR\033[0m - {e}")
 
