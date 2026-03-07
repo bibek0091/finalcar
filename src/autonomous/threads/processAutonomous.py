@@ -9,6 +9,7 @@ import time
 import os
 import queue
 import logging
+import base64
 import cv2
 import numpy as np
 from src.templates.workerprocess import WorkerProcess
@@ -97,6 +98,7 @@ class processAutonomous(WorkerProcess):
             
         self.last_time = time.time()
         self.last_steer = 0.0
+        self._dash_counter = 0  # throttle dashboard updates to ~5 fps
 
         super(processAutonomous, self).__init__(self.queuesList, ready_event)
 
@@ -137,6 +139,8 @@ class processAutonomous(WorkerProcess):
         final_steer = float(base_steer)
         
         # 4. Semantic Traffic Overrides (Stop signs, Pedestrians, Traffic Lights)
+        t_res = None
+        behav_out = None
         if self.traffic_engine and self.behavior:
             line_type = getattr(lane_result, 'lane_type', 'UNKNOWN')
             t_res = self.traffic_engine.process(frame, line_type)
@@ -156,5 +160,58 @@ class processAutonomous(WorkerProcess):
         self.speedSender.send(str(int(final_speed)))
         self.steerSender.send(str(int(final_steer)))
         
-        # 6. Visualization disabled for headless Raspberry Pi
-        # (No cv2.imshow — avoids Qt/X11 crashes on SSH sessions)
+        # 6. Stream to Dashboard (throttled to ~5 fps)
+        self._dash_counter += 1
+        if self._dash_counter % 6 == 0:  # every ~6 frames ≈ 5fps at 30fps input
+            try:
+                # BEV debug frame
+                bev_q = self.queuesList.get("DashBEV")
+                if bev_q is not None:
+                    bev_dbg = annotate_bev(
+                        lane_result, control_output, t_res, behav_out,
+                    )
+                    _, buf = cv2.imencode('.jpg', bev_dbg, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                    b64 = base64.b64encode(buf).decode('ascii')
+                    if bev_q.full():
+                        try: bev_q.get_nowait()
+                        except: pass
+                    bev_q.put_nowait(b64)
+
+                # YOLO annotated frame
+                yolo_q = self.queuesList.get("DashYOLO")
+                if yolo_q is not None and self.traffic_engine:
+                    yolo_frame = frame.copy()
+                    if hasattr(self.yolo_detector, 'active_detections'):
+                        for det in self.yolo_detector.active_detections:
+                            x1, y1, x2, y2 = int(det['x1']), int(det['y1']), int(det['x2']), int(det['y2'])
+                            label = det.get('label', '')
+                            conf = det.get('conf', 0)
+                            cv2.rectangle(yolo_frame, (x1,y1), (x2,y2), (0,255,0), 2)
+                            cv2.putText(yolo_frame, f"{label} {conf:.1f}", (x1,y1-5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+                    _, buf = cv2.imencode('.jpg', yolo_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                    b64 = base64.b64encode(buf).decode('ascii')
+                    if yolo_q.full():
+                        try: yolo_q.get_nowait()
+                        except: pass
+                    yolo_q.put_nowait(b64)
+
+                # Decision state JSON
+                dec_q = self.queuesList.get("DashDecision")
+                if dec_q is not None:
+                    yolo_labels = getattr(t_res, 'active_labels', []) if t_res else []
+                    decision = {
+                        'state': behav_out.state if behav_out else 'LANE_FOLLOW',
+                        'reason': behav_out.reason if behav_out else 'lane tracking',
+                        'priority': behav_out.priority if behav_out else 10,
+                        'zone': behav_out.zone_mode if behav_out else 'CITY',
+                        'speed': final_speed,
+                        'steer': final_steer,
+                        'yolo_labels': yolo_labels,
+                    }
+                    if dec_q.full():
+                        try: dec_q.get_nowait()
+                        except: pass
+                    dec_q.put_nowait(decision)
+            except Exception:
+                pass  # Dashboard streaming must never crash the autonomous loop

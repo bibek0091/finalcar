@@ -1,3 +1,4 @@
+
 import sys
 import time
 import os
@@ -91,7 +92,10 @@ queueList = {
     "Config": Queue(),
     "Log": Queue(),
     "Vision": Queue(),       # Custom: Used by our YOLO script
-    "Autonomous": Queue()    # Custom: Used by our Brain script
+    "Autonomous": Queue(),   # Custom: Used by our Brain script
+    "DashBEV": Queue(),      # Dashboard: BEV lane debug frames (base64)
+    "DashYOLO": Queue(),     # Dashboard: YOLO annotated frames (base64)
+    "DashDecision": Queue(), # Dashboard: Decision engine state (JSON)
 }
 logging = logging.getLogger()
 

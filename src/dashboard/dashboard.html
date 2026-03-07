@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BFMC Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Inter',sans-serif; background:#0a0e17; color:#e0e6f0; min-height:100vh; }
+  
+  /* ── Header ──────────────────────────────────────────────────── */
+  .header { display:flex; align-items:center; justify-content:space-between;
+    padding:10px 20px; background:linear-gradient(135deg,#0f1628,#1a2240);
+    border-bottom:1px solid #2a3456; }
+  .header h1 { font-size:20px; font-weight:700;
+    background:linear-gradient(90deg,#4fc3f7,#7c4dff); -webkit-background-clip:text;
+    -webkit-text-fill-color:transparent; letter-spacing:1px; }
+  .status-pill { display:flex; align-items:center; gap:8px; padding:6px 16px;
+    border-radius:20px; font-size:13px; font-weight:500;
+    background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1); }
+  .status-dot { width:10px; height:10px; border-radius:50%;
+    animation:pulse 1.5s ease-in-out infinite; }
+  .status-dot.idle { background:#888; animation:none; }
+  .status-dot.running { background:#4caf50; }
+  .status-dot.error { background:#f44336; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* ── Controls Bar ────────────────────────────────────────────── */
+  .controls { display:flex; align-items:center; gap:12px; padding:10px 20px;
+    background:#0d1220; border-bottom:1px solid #1e2a4a; }
+  .btn { padding:8px 24px; border:none; border-radius:8px; font-family:'Inter';
+    font-size:13px; font-weight:600; cursor:pointer; transition:all .2s; }
+  .btn-start { background:linear-gradient(135deg,#43a047,#66bb6a); color:#fff; }
+  .btn-start:hover { transform:translateY(-1px); box-shadow:0 4px 15px rgba(76,175,80,.4); }
+  .btn-stop { background:linear-gradient(135deg,#e53935,#ef5350); color:#fff; }
+  .btn-stop:hover { transform:translateY(-1px); box-shadow:0 4px 15px rgba(244,67,54,.4); }
+  .btn:disabled { opacity:0.4; cursor:not-allowed; transform:none!important; box-shadow:none!important; }
+  .conn-label { font-size:12px; color:#667; margin-left:auto; }
+
+  /* ── Grid Layout ─────────────────────────────────────────────── */
+  .grid { display:grid; grid-template-columns:1fr 1fr;
+    grid-template-rows:auto auto; gap:12px; padding:12px; flex:1; }
+
+  /* ── Panel ───────────────────────────────────────────────────── */
+  .panel { background:linear-gradient(180deg,#111827,#0d1117); border:1px solid #1e2a4a;
+    border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
+  .panel-header { display:flex; align-items:center; gap:8px; padding:10px 14px;
+    background:rgba(255,255,255,0.03); border-bottom:1px solid #1e2a4a;
+    font-size:13px; font-weight:600; color:#8892b0; text-transform:uppercase;
+    letter-spacing:1px; }
+  .panel-header .dot { width:8px; height:8px; border-radius:50%; }
+  .panel-body { flex:1; padding:8px; display:flex; align-items:center; justify-content:center;
+    min-height:200px; position:relative; }
+
+  /* ── BEV / YOLO Feeds ────────────────────────────────────────── */
+  .feed-img { max-width:100%; max-height:300px; border-radius:6px;
+    background:#000; object-fit:contain; }
+  .feed-placeholder { color:#334; font-size:14px; text-align:center; }
+
+  /* ── Map Panel ───────────────────────────────────────────────── */
+  .map-panel { grid-row: span 2; }
+  .map-panel .panel-body { padding:0; }
+  #mapCanvas { width:100%; height:100%; cursor:crosshair; background:#080c14; border-radius:0 0 12px 12px; }
+
+  /* ── Sign Palette ────────────────────────────────────────────── */
+  .sign-palette { display:flex; flex-wrap:wrap; gap:4px; padding:6px 10px;
+    background:rgba(255,255,255,0.02); border-top:1px solid #1e2a4a; }
+  .sign-btn { padding:4px 8px; border:1px solid #2a3456; border-radius:6px;
+    background:rgba(79,195,247,0.08); color:#4fc3f7; font-size:11px;
+    cursor:pointer; transition:all .15s; font-family:'Inter'; }
+  .sign-btn:hover, .sign-btn.active { background:rgba(79,195,247,0.25);
+    border-color:#4fc3f7; }
+  .map-info { font-size:11px; color:#556; padding:4px 10px;
+    border-top:1px solid #1a2040; background:rgba(0,0,0,.2); }
+
+  /* ── Decision Panel ──────────────────────────────────────────── */
+  .decision-grid { width:100%; display:grid; grid-template-columns:auto 1fr;
+    gap:4px 12px; font-size:13px; padding:8px; }
+  .decision-grid .lbl { color:#556b8a; font-weight:500; text-align:right; }
+  .decision-grid .val { color:#e0e6f0; font-weight:600; }
+  .val.state-stop { color:#ef5350; }
+  .val.state-drive { color:#66bb6a; }
+  .val.state-slow { color:#ffa726; }
+  .yolo-tags { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+  .yolo-tag { padding:2px 8px; border-radius:4px; font-size:11px;
+    background:rgba(124,77,255,.15); color:#b388ff; border:1px solid rgba(124,77,255,.3); }
+
+  /* ── Terminal ────────────────────────────────────────────────── */
+  .terminal { width:100%; height:100%; min-height:120px; max-height:180px;
+    overflow-y:auto; padding:8px; font-family:'JetBrains Mono','Fira Code',monospace;
+    font-size:11px; line-height:1.6; color:#4fc3f7; background:#050810; border-radius:0 0 12px 12px; }
+  .terminal .log-line { white-space:pre-wrap; word-break:break-all; }
+  .terminal .log-warn { color:#ffa726; }
+  .terminal .log-err { color:#ef5350; }
+
+  /* ── Route info ──────────────────────────────────────────────── */
+  .route-controls { display:flex; gap:8px; align-items:center; padding:6px 10px;
+    background:rgba(0,0,0,.15); border-top:1px solid #1a2040; font-size:12px; }
+  .route-controls span { color:#556b8a; }
+  .route-controls .val { color:#4fc3f7; }
+  .btn-sm { padding:3px 10px; border:1px solid #2a3456; border-radius:4px;
+    background:rgba(79,195,247,0.08); color:#4fc3f7; font-size:11px;
+    cursor:pointer; font-family:'Inter'; }
+  .btn-sm:hover { background:rgba(79,195,247,0.2); }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <h1>⊕ BFMC Dashboard</h1>
+  <div class="status-pill">
+    <div class="status-dot idle" id="statusDot"></div>
+    <span id="statusLabel">Disconnected</span>
+  </div>
+</div>
+
+<!-- Controls -->
+<div class="controls">
+  <button class="btn btn-start" id="btnStart" onclick="startCar()">▶ START (KL:30)</button>
+  <button class="btn btn-stop" id="btnStop" onclick="stopCar()" disabled>■ STOP</button>
+  <span class="conn-label" id="connLabel">Connecting...</span>
+</div>
+
+<!-- Grid -->
+<div class="grid">
+
+  <!-- BEV Panel -->
+  <div class="panel">
+    <div class="panel-header"><div class="dot" style="background:#4fc3f7"></div>Bird's Eye View</div>
+    <div class="panel-body">
+      <img id="bevImg" class="feed-img" alt="BEV"
+        style="display:none">
+      <div class="feed-placeholder" id="bevPlaceholder">Waiting for BEV feed...</div>
+    </div>
+  </div>
+
+  <!-- Map Panel (spans 2 rows) -->
+  <div class="panel map-panel">
+    <div class="panel-header"><div class="dot" style="background:#7c4dff"></div>Track Map</div>
+    <div class="panel-body">
+      <canvas id="mapCanvas"></canvas>
+    </div>
+    <div class="sign-palette" id="signPalette"></div>
+    <div class="route-controls">
+      <span>Start:</span><span class="val" id="routeStart">—</span>
+      <span>End:</span><span class="val" id="routeEnd">—</span>
+      <span>Steps:</span><span class="val" id="routeLen">—</span>
+      <button class="btn-sm" onclick="clearRoute()">Clear</button>
+      <button class="btn-sm" onclick="clearSigns()">Clear Signs</button>
+    </div>
+    <div class="map-info" id="mapInfo">Click on map to set start, then end node. Right-click to place selected sign.</div>
+  </div>
+
+  <!-- YOLO Panel -->
+  <div class="panel">
+    <div class="panel-header"><div class="dot" style="background:#ff7043"></div>YOLO Detection</div>
+    <div class="panel-body">
+      <img id="yoloImg" class="feed-img" alt="YOLO"
+        style="display:none">
+      <div class="feed-placeholder" id="yoloPlaceholder">Waiting for YOLO feed...</div>
+    </div>
+  </div>
+
+  <!-- Decision + Terminal stacked -->
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <!-- Decision Panel -->
+    <div class="panel">
+      <div class="panel-header"><div class="dot" style="background:#66bb6a"></div>Decision Engine</div>
+      <div class="panel-body" style="align-items:flex-start">
+        <div class="decision-grid" id="decisionGrid">
+          <span class="lbl">State</span><span class="val" id="dState">—</span>
+          <span class="lbl">Reason</span><span class="val" id="dReason">—</span>
+          <span class="lbl">Priority</span><span class="val" id="dPriority">—</span>
+          <span class="lbl">Zone</span><span class="val" id="dZone">—</span>
+          <span class="lbl">Speed</span><span class="val" id="dSpeed">—</span>
+          <span class="lbl">Steer</span><span class="val" id="dSteer">—</span>
+          <span class="lbl">YOLO</span><span class="val" id="dYolo">—</span>
+        </div>
+      </div>
+    </div>
+    <!-- Terminal Panel -->
+    <div class="panel" style="flex:1">
+      <div class="panel-header"><div class="dot" style="background:#ffa726"></div>System Logs</div>
+      <div class="terminal" id="terminal"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════
+// Configuration
+// ═══════════════════════════════════════════════════════════════════════
+const SIGNS = [
+  {id:'stop', label:'🛑 Stop', color:'#ef5350'},
+  {id:'parking', label:'🅿️ Parking', color:'#42a5f5'},
+  {id:'crosswalk', label:'🚶 Crosswalk', color:'#ffa726'},
+  {id:'priority', label:'⬆ Priority', color:'#ab47bc'},
+  {id:'oneway', label:'➡ One-Way', color:'#26c6da'},
+  {id:'highway_entry', label:'🛣 Hwy Entry', color:'#66bb6a'},
+  {id:'highway_exit', label:'🚧 Hwy Exit', color:'#8d6e63'},
+  {id:'roundabout', label:'🔄 Roundabout', color:'#7e57c2'},
+  {id:'noentry', label:'⛔ No Entry', color:'#e53935'},
+];
+
+// ═══════════════════════════════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════════════════════════════
+let socket = null;
+let graphData = null;        // {nodes: {id:{x,y}}, edges: [...]}
+let route = [];              // [node_ids] from A*
+let routeSet = new Set();
+let startNode = null;
+let endNode = null;
+let carNode = null;          // current car position node
+let carXY = null;            // {x, y}
+let placedSigns = [];        // [{label, node_id, x, y}]
+let selectedSign = null;     // sign id being placed
+let selectingStart = true;   // true=next click sets start, false=sets end
+let logLines = [];
+
+// ═══════════════════════════════════════════════════════════════════════
+// Socket.IO Connection
+// ═══════════════════════════════════════════════════════════════════════
+function connect() {
+  socket = io(window.location.origin, {transports:['polling','websocket']});
+
+  socket.on('connect', () => {
+    setStatus('running', 'Connected');
+    document.getElementById('connLabel').textContent = 'Connected ✓';
+    socket.emit('get_graph');
+    addLog('Connected to backend');
+  });
+
+  socket.on('disconnect', () => {
+    setStatus('error', 'Disconnected');
+    document.getElementById('connLabel').textContent = 'Disconnected';
+  });
+
+  socket.on('graph_data', (data) => {
+    graphData = data;
+    addLog(`Map loaded: ${Object.keys(data.nodes).length} nodes, ${data.edges.length} edges`);
+    drawMap();
+  });
+
+  socket.on('bev_frame', (data) => {
+    const img = document.getElementById('bevImg');
+    const ph = document.getElementById('bevPlaceholder');
+    img.src = 'data:image/jpeg;base64,' + data;
+    img.style.display = 'block';
+    ph.style.display = 'none';
+  });
+
+  socket.on('yolo_frame', (data) => {
+    const img = document.getElementById('yoloImg');
+    const ph = document.getElementById('yoloPlaceholder');
+    img.src = 'data:image/jpeg;base64,' + data;
+    img.style.display = 'block';
+    ph.style.display = 'none';
+  });
+
+  socket.on('decision', (data) => {
+    updateDecision(data);
+    // Check for sign-based localization
+    if (data.yolo_labels && data.yolo_labels.length > 0) {
+      for (const label of data.yolo_labels) {
+        localizeBySign(label);
+      }
+    }
+  });
+
+  socket.on('log_line', (data) => {
+    addLog(data);
+  });
+
+  socket.on('car_position', (data) => {
+    if (data && data.node_id) {
+      carNode = data.node_id;
+      carXY = {x: data.x, y: data.y};
+      drawMap();
+    }
+  });
+
+  socket.on('route_result', (data) => {
+    route = data.route || [];
+    routeSet = new Set(route);
+    document.getElementById('routeLen').textContent = route.length;
+    addLog(`A* route: ${route.length} nodes`);
+    drawMap();
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Controls
+// ═══════════════════════════════════════════════════════════════════════
+function startCar() {
+  if (socket) {
+    socket.emit('start_car');
+    document.getElementById('btnStart').disabled = true;
+    document.getElementById('btnStop').disabled = false;
+    setStatus('running', 'Running');
+    addLog('▶ START command sent (KL:30)');
+  }
+}
+
+function stopCar() {
+  if (socket) {
+    socket.emit('stop_car');
+    document.getElementById('btnStart').disabled = false;
+    document.getElementById('btnStop').disabled = true;
+    setStatus('idle', 'Stopped');
+    addLog('■ STOP command sent');
+  }
+}
+
+function setStatus(state, text) {
+  const dot = document.getElementById('statusDot');
+  const lbl = document.getElementById('statusLabel');
+  dot.className = 'status-dot ' + state;
+  lbl.textContent = text;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Decision Panel
+// ═══════════════════════════════════════════════════════════════════════
+function updateDecision(d) {
+  const stateEl = document.getElementById('dState');
+  stateEl.textContent = d.state || '—';
+  stateEl.className = 'val ' + (
+    (d.state||'').includes('STOP') ? 'state-stop' :
+    (d.state||'').includes('SLOW') ? 'state-slow' : 'state-drive'
+  );
+  document.getElementById('dReason').textContent = d.reason || '—';
+  document.getElementById('dPriority').textContent = d.priority || '—';
+  document.getElementById('dZone').textContent = d.zone || '—';
+  document.getElementById('dSpeed').textContent = d.speed ? d.speed.toFixed(0) + ' PWM' : '—';
+  document.getElementById('dSteer').textContent = d.steer ? d.steer.toFixed(1) + '°' : '—';
+
+  const yoloEl = document.getElementById('dYolo');
+  if (d.yolo_labels && d.yolo_labels.length > 0) {
+    yoloEl.innerHTML = d.yolo_labels.map(l =>
+      `<span class="yolo-tag">${l}</span>`
+    ).join('');
+  } else {
+    yoloEl.textContent = 'none';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Terminal
+// ═══════════════════════════════════════════════════════════════════════
+function addLog(text) {
+  const now = new Date().toLocaleTimeString();
+  const cls = text.includes('ERROR') || text.includes('FATAL') ? 'log-err' :
+              text.includes('WARN') ? 'log-warn' : '';
+  logLines.push({time:now, text, cls});
+  if (logLines.length > 200) logLines.shift();
+  const term = document.getElementById('terminal');
+  term.innerHTML = logLines.map(l =>
+    `<div class="log-line ${l.cls}">[${l.time}] ${l.text}</div>`
+  ).join('');
+  term.scrollTop = term.scrollHeight;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sign-Based Localization
+// ═══════════════════════════════════════════════════════════════════════
+function localizeBySign(detectedLabel) {
+  for (const sp of placedSigns) {
+    if (sp.label === detectedLabel && routeSet.has(sp.node_id)) {
+      carNode = sp.node_id;
+      carXY = {x: sp.x, y: sp.y};
+      addLog(`📍 Car localized at node ${sp.node_id} (detected: ${detectedLabel})`);
+      drawMap();
+      return;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Map Rendering (Canvas)
+// ═══════════════════════════════════════════════════════════════════════
+function drawMap() {
+  const canvas = document.getElementById('mapCanvas');
+  const ctx = canvas.getContext('2d');
+  if (!graphData) return;
+
+  // Resize canvas to container
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+
+  const nodes = graphData.nodes;
+  const edges = graphData.edges;
+
+  // Compute bounds
+  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+  for (const nid in nodes) {
+    const n = nodes[nid];
+    minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+  }
+
+  const pad = 30;
+  const scaleX = (canvas.width - 2*pad) / (maxX - minX || 1);
+  const scaleY = (canvas.height - 2*pad) / (maxY - minY || 1);
+  const scale = Math.min(scaleX, scaleY);
+
+  function tx(x) { return pad + (x - minX) * scale; }
+  function ty(y) { return canvas.height - pad - (y - minY) * scale; }  // flip Y
+
+  // Clear
+  ctx.fillStyle = '#080c14';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Draw edges
+  for (const e of edges) {
+    const s = nodes[e.src], d = nodes[e.dst];
+    if (!s || !d) continue;
+    const inRoute = routeSet.has(e.src) && routeSet.has(e.dst);
+    ctx.beginPath();
+    ctx.moveTo(tx(s.x), ty(s.y));
+    ctx.lineTo(tx(d.x), ty(d.y));
+    if (inRoute) {
+      ctx.strokeStyle = '#4caf50';
+      ctx.lineWidth = 3;
+    } else {
+      ctx.strokeStyle = e.dotted ? 'rgba(100,100,200,0.25)' : 'rgba(150,150,200,0.15)';
+      ctx.lineWidth = 1;
+    }
+    if (e.dotted && !inRoute) ctx.setLineDash([4,4]);
+    else ctx.setLineDash([]);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Draw route nodes
+  for (const nid of route) {
+    const n = nodes[nid];
+    if (!n) continue;
+    ctx.beginPath();
+    ctx.arc(tx(n.x), ty(n.y), 2.5, 0, Math.PI*2);
+    ctx.fillStyle = '#4caf50';
+    ctx.fill();
+  }
+
+  // Draw start/end markers
+  if (startNode && nodes[startNode]) {
+    const n = nodes[startNode];
+    ctx.beginPath(); ctx.arc(tx(n.x), ty(n.y), 8, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(76,175,80,0.3)'; ctx.fill();
+    ctx.strokeStyle = '#4caf50'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 10px Inter';
+    ctx.textAlign = 'center'; ctx.fillText('S', tx(n.x), ty(n.y)+3);
+  }
+  if (endNode && nodes[endNode]) {
+    const n = nodes[endNode];
+    ctx.beginPath(); ctx.arc(tx(n.x), ty(n.y), 8, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(244,67,54,0.3)'; ctx.fill();
+    ctx.strokeStyle = '#ef5350'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 10px Inter';
+    ctx.textAlign = 'center'; ctx.fillText('E', tx(n.x), ty(n.y)+3);
+  }
+
+  // Draw placed signs
+  for (const sp of placedSigns) {
+    const sign = SIGNS.find(s => s.id === sp.label);
+    if (!sign) continue;
+    ctx.beginPath(); ctx.arc(tx(sp.x), ty(sp.y), 7, 0, Math.PI*2);
+    ctx.fillStyle = sign.color + '44'; ctx.fill();
+    ctx.strokeStyle = sign.color; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = '10px Inter';
+    ctx.textAlign = 'center'; ctx.fillText(sign.label.split(' ')[0], tx(sp.x), ty(sp.y)-10);
+  }
+
+  // Draw car position
+  if (carXY) {
+    ctx.beginPath(); ctx.arc(tx(carXY.x), ty(carXY.y), 6, 0, Math.PI*2);
+    ctx.fillStyle = '#ff9800'; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+    // Glow effect
+    ctx.beginPath(); ctx.arc(tx(carXY.x), ty(carXY.y), 12, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(255,152,0,0.3)'; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  // Store transform for click detection
+  canvas._tx = tx; canvas._ty = ty; canvas._minX = minX; canvas._minY = minY;
+  canvas._scale = scale; canvas._pad = pad;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Map Interaction
+// ═══════════════════════════════════════════════════════════════════════
+function findClosestNode(mx, my) {
+  const canvas = document.getElementById('mapCanvas');
+  const tx = canvas._tx, ty = canvas._ty;
+  if (!graphData || !tx) return null;
+
+  let best = null, bestDist = Infinity;
+  for (const nid in graphData.nodes) {
+    const n = graphData.nodes[nid];
+    const dx = tx(n.x) - mx, dy = ty(n.y) - my;
+    const d = dx*dx + dy*dy;
+    if (d < bestDist) { bestDist = d; best = nid; }
+  }
+  return bestDist < 400 ? best : null;  // 20px radius
+}
+
+document.getElementById('mapCanvas').addEventListener('click', (e) => {
+  const rect = e.target.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const nid = findClosestNode(mx, my);
+  if (!nid) return;
+
+  if (selectingStart) {
+    startNode = nid;
+    document.getElementById('routeStart').textContent = nid;
+    document.getElementById('mapInfo').textContent = `Start: node ${nid}. Click to set end node.`;
+    selectingStart = false;
+  } else {
+    endNode = nid;
+    document.getElementById('routeEnd').textContent = nid;
+    document.getElementById('mapInfo').textContent = `Route: ${startNode} → ${nid}. Computing A*...`;
+    selectingStart = true;
+    // Request A* from server
+    if (socket) {
+      socket.emit('find_route', {start: startNode, end: endNode});
+    }
+  }
+  drawMap();
+});
+
+document.getElementById('mapCanvas').addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  if (!selectedSign) {
+    document.getElementById('mapInfo').textContent = 'Select a sign from the palette first, then right-click on map.';
+    return;
+  }
+  const rect = e.target.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const nid = findClosestNode(mx, my);
+  if (!nid) return;
+  const n = graphData.nodes[nid];
+  placedSigns.push({label: selectedSign, node_id: nid, x: n.x, y: n.y});
+  addLog(`📌 Placed ${selectedSign} at node ${nid}`);
+  if (socket) socket.emit('place_sign', {label: selectedSign, node_id: nid});
+  drawMap();
+});
+
+function clearRoute() {
+  startNode = endNode = null; route = []; routeSet.clear();
+  document.getElementById('routeStart').textContent = '—';
+  document.getElementById('routeEnd').textContent = '—';
+  document.getElementById('routeLen').textContent = '—';
+  selectingStart = true;
+  document.getElementById('mapInfo').textContent = 'Click on map to set start, then end node.';
+  drawMap();
+}
+function clearSigns() {
+  placedSigns = []; carNode = null; carXY = null;
+  if (socket) socket.emit('clear_signs');
+  drawMap();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sign Palette
+// ═══════════════════════════════════════════════════════════════════════
+function initSignPalette() {
+  const pal = document.getElementById('signPalette');
+  for (const s of SIGNS) {
+    const btn = document.createElement('button');
+    btn.className = 'sign-btn';
+    btn.textContent = s.label;
+    btn.dataset.id = s.id;
+    btn.onclick = () => {
+      document.querySelectorAll('.sign-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      selectedSign = s.id;
+      document.getElementById('mapInfo').textContent = `Right-click on map to place ${s.label}`;
+    };
+    pal.appendChild(btn);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Init
+// ═══════════════════════════════════════════════════════════════════════
+window.addEventListener('load', () => {
+  initSignPalette();
+  connect();
+  window.addEventListener('resize', drawMap);
+});
+</script>
+</body>
+</html>
