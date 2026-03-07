@@ -124,8 +124,11 @@ class threadCamera(ThreadWithStop):
             mainRequest = self.camera.capture_array("main")
             serialRequest = self.camera.capture_array("lores")  # Will capture an array that can be used by OpenCV library
 
-            # Camera is now natively configured to output BGR888 directly from hardware
-            main_bgr = mainRequest
+            # Use exact proven conversion logic from the tempfile backup script
+            if mainRequest.ndim == 3 and mainRequest.shape[2] == 4:
+                main_bgr = cv2.cvtColor(mainRequest, cv2.COLOR_BGRA2BGR)
+            else:
+                main_bgr = cv2.cvtColor(mainRequest, cv2.COLOR_RGB2BGR)
 
             if self.recording == True:
                 self.video_writer.write(main_bgr) # type: ignore
@@ -182,7 +185,7 @@ class threadCamera(ThreadWithStop):
             config = self.camera.create_preview_configuration(
                 buffer_count=1,
                 queue=False,
-                main={"format": "BGR888", "size": (2048, 1080)},
+                main={"format": "RGB888", "size": (2048, 1080)},
                 lores={"size": (512, 270)},
                 encode="lores",
             )
