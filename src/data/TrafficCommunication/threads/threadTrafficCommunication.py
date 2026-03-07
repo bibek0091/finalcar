@@ -43,6 +43,7 @@ class threadTrafficCommunication(ThreadWithStop):
             print(f"[TrafficComm] Listening on UDP {self.udp_port}")
         except Exception as e:
             print(f"[TrafficComm] Failed to bind UDP: {e}")
+            self.sock = None
 
     def run(self):
         self._init_socket()

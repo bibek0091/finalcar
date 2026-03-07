@@ -38,6 +38,7 @@ class threadSemaphores(ThreadWithStop):
             print(f"[Semaphores] Listening on UDP {self.udp_port}")
         except Exception as e:
             print(f"[Semaphores] Failed to bind UDP: {e}")
+            self.sock = None
 
     def run(self):
         self._init_socket()
