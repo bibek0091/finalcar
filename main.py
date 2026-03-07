@@ -143,13 +143,26 @@ allEvents.append(serial_handler_ready)
 
 # ===================================== INITIALIZE OUR CUSTOM STACK =====================
 
-# 1. Start the Gateway (WebSockets for Telemetry to Dashboard)
+# 1. Start the Gateway (WebSockets for Telemetry to Dashboard) — must start FIRST
 try:
     from src.gateway.processGateway import processGateway
-    gateway_process = processGateway(queueList, logging)
-    allProcesses.append(gateway_process)
+    processGateway_inst = processGateway(queueList, logging)
+    processGateway_inst.daemon = True
+    processGateway_inst.start()
 except Exception as e:
+    processGateway_inst = None
     logging.warning(f"Skipping Gateway: {e}")
+
+# 1b. Start the Dashboard (Flask+SocketIO on port 5005)
+dashboard_ready = Event()
+try:
+    from src.dashboard.processDashboard import processDashboard
+    dashboard_process = processDashboard(queueList, logging, dashboard_ready, debugging=False)
+    allProcesses.append(dashboard_process)
+    allEvents.append(dashboard_ready)
+except Exception as e:
+    logging.warning(f"Skipping Dashboard: {e}")
+    dashboard_ready.set()  # Don't block if dashboard is missing
 
 # 2. Start the Autonomous Process (The Brain)
 from src.autonomous.threads.processAutonomous import processAutonomous
@@ -192,7 +205,11 @@ except KeyboardInterrupt:
 
     for proc in reversed(allProcesses):
         proc.stop()
+    if processGateway_inst:
+        processGateway_inst.stop()
 
     # wait for all processes to finish before exiting
     for proc in reversed(allProcesses):
         shutdown_process(proc)
+    if processGateway_inst:
+        shutdown_process(processGateway_inst)
