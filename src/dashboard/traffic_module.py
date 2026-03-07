@@ -157,6 +157,22 @@ class ThreadedYOLODetector:
             except Exception as e:
                 print(f"[YOLO] Detection error: {e}")
 
+    def restart_worker(self):
+        """Re-start the inference thread in the current process (call this post-fork)."""
+        # Terminate old worker if still alive
+        self.running = False
+        if hasattr(self, 'worker') and self.worker.is_alive():
+            self.worker.join(timeout=1.0)
+        # Drain queues
+        for q in (self.frame_queue, self.result_queue):
+            while not q.empty():
+                try: q.get_nowait()
+                except: break
+        # Re-start
+        self.running = True
+        self.worker = threading.Thread(target=self._run, daemon=True)
+        self.worker.start()
+
     def update_frame(self, frame):
         # Drop stale frames to process ONLY the newest frame
         while not self.frame_queue.empty():

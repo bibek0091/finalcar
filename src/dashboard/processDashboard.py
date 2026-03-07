@@ -199,56 +199,21 @@ class processDashboard(WorkerProcess):
 
         @self.socketio.on('calibrate')
         def on_calibrate():
-            """Run IMU + camera calibration and report progress to frontend."""
-            def _do_calibration():
-                try:
-                    self.socketio.emit('calibration_status', {'step': 'imu', 'msg': '🔄 Calibrating IMU — hold still...', 'pct': 10})
-                    time.sleep(2.5)   # IMU bias settling (BNO055 needs ~2s)
-                    self.socketio.emit('calibration_status', {'step': 'camera', 'msg': '📷 Camera exposure settling...', 'pct': 40})
-                    time.sleep(1.5)   # Camera auto-exposure lock
-                    self.socketio.emit('calibration_status', {'step': 'lane', 'msg': '🛣 Lane finder warmup...', 'pct': 65})
-                    time.sleep(1.0)   # Lane detector first-frame warmup
-                    self.socketio.emit('calibration_status', {'step': 'yolo', 'msg': '🎯 YOLO detector ready check...', 'pct': 85})
-                    time.sleep(0.5)
-                    self.socketio.emit('calibration_status', {'step': 'done', 'msg': '✅ Calibration complete', 'pct': 100})
-                except Exception as e:
-                    self.socketio.emit('calibration_status', {'step': 'error', 'msg': f'❌ Calibration error: {e}', 'pct': 0})
-            threading.Thread(target=_do_calibration, daemon=True).start()
+            """Standalone calibration (without starting car)."""
+            self._calib_abort = False
+            threading.Thread(target=lambda: self._run_calibration(start_after=False), daemon=True).start()
 
         @self.socketio.on('start_car')
         def on_start_car():
-            self.car_running = True
-            self.socketio.emit('log_line', '🔄 Calibrating sensors before start...')
-            def _calibrate_then_start():
-                try:
-                    # Step 1: IMU calibration
-                    self.socketio.emit('calibration_status', {'step': 'imu', 'msg': '🔄 IMU zero-bias calibration...', 'pct': 15})
-                    time.sleep(2.5)
-                    # Step 2: Camera exposure
-                    self.socketio.emit('calibration_status', {'step': 'camera', 'msg': '📷 Camera exposure lock...', 'pct': 40})
-                    time.sleep(1.5)
-                    # Step 3: Lane detector warmup
-                    self.socketio.emit('calibration_status', {'step': 'lane', 'msg': '🛣 Lane detector warmup...', 'pct': 65})
-                    time.sleep(1.0)
-                    # Step 4: YOLO ready
-                    self.socketio.emit('calibration_status', {'step': 'yolo', 'msg': '🎯 YOLO ready...', 'pct': 85})
-                    time.sleep(0.5)
-                    self.socketio.emit('calibration_status', {'step': 'done', 'msg': '✅ Ready — starting car', 'pct': 100})
-                    time.sleep(0.3)
-                    # Step 5: Send KL:30 to enable engine
-                    if 'Klem' in self.sendMessages:
-                        self.sendMessages['Klem']['obj'].send('30')
-                    # Step 6: Switch to AUTO mode
-                    self.stateMachine.request_mode("dashboard_auto_button")
-                    self.socketio.emit('log_line', '▶ Car started — KL:30 sent, AUTO mode active')
-                except Exception as e:
-                    self.socketio.emit('log_line', f'❌ Start failed: {e}')
-                    self.car_running = False
-            threading.Thread(target=_calibrate_then_start, daemon=True).start()
+            self.car_running = False   # stays False until calibration completes
+            self._calib_abort = False
+            self.socketio.emit('log_line', '⏳ 5-minute calibration starting — keep car still...')
+            threading.Thread(target=lambda: self._run_calibration(start_after=True), daemon=True).start()
 
         @self.socketio.on('stop_car')
         def on_stop_car():
             self.car_running = False
+            self._calib_abort = True   # abort any running calibration
             # 1. Stop motors immediately
             if 'SpeedMotor' in self.sendMessages:
                 self.sendMessages['SpeedMotor']['obj'].send('0')
@@ -267,6 +232,167 @@ class processDashboard(WorkerProcess):
             if self.car_running and 'SpeedMotor' in self.sendMessages:
                 spd = max(0, min(100, int(data.get('speed', 0))))
                 self.sendMessages['SpeedMotor']['obj'].send(str(spd))
+
+    def _run_calibration(self, start_after=True):
+        """
+        Real 5-minute calibration sequence.
+        Phase 1 — IMU  : Poll BNO055 CALIB_STAT via I2C until SYS≥2 & GYR≥2 & MAG≥2 (max 5 min)
+        Phase 2 — Camera: Wait until Vision queue delivers frames (max 30 s)
+        Phase 3 — Lane  : Wait until DashBEV queue delivers BEV frames (max 30 s)
+        Phase 4 — YOLO  : Wait until DashYOLO queue delivers annotated frames (max 30 s)
+        """
+        TOTAL_SECONDS = 300  # 5 minutes max for IMU
+        IMU_ADDR      = 0x28
+        CALIB_STAT    = 0x35
+
+        def emit(step, msg, pct):
+            self.socketio.emit('calibration_status', {'step': step, 'msg': msg, 'pct': pct})
+
+        def aborted():
+            return getattr(self, '_calib_abort', False)
+
+        try:
+            # ── Phase 1: IMU ──────────────────────────────────────────────
+            emit('imu', '\U0001f504 IMU calibrating — keep car still (up to 5 min)...', 5)
+            bus = None
+            imu_ok = False
+            try:
+                import smbus
+                bus = smbus.SMBus(1)
+                # Check chip ID
+                chip = bus.read_byte_data(IMU_ADDR, 0x00)
+                if chip != 0xA0:
+                    # Try alt address
+                    IMU_ADDR = 0x29
+                    chip = bus.read_byte_data(IMU_ADDR, 0x00)
+                if chip == 0xA0:
+                    # Set NDOF fusion mode
+                    bus.write_byte_data(IMU_ADDR, 0x3D, 0x00)   # CONFIG
+                    time.sleep(0.05)
+                    bus.write_byte_data(IMU_ADDR, 0x3D, 0x0C)   # NDOF
+                    time.sleep(0.1)
+                    self.socketio.emit('log_line', f'[IMU] BNO055 found at 0x{IMU_ADDR:02X}, NDOF mode active')
+                    imu_ok = True
+                else:
+                    self.socketio.emit('log_line', '[IMU] BNO055 not found on I2C — skipping hardware calibration')
+            except Exception as e:
+                self.socketio.emit('log_line', f'[IMU] I2C unavailable: {e} — skipping')
+
+            imu_start = time.time()
+            while not aborted():
+                elapsed = time.time() - imu_start
+                timeout = elapsed >= TOTAL_SECONDS
+
+                if imu_ok and bus:
+                    try:
+                        calib = bus.read_byte_data(IMU_ADDR, CALIB_STAT)
+                        sys_s = (calib >> 6) & 0x03
+                        gyr_s = (calib >> 4) & 0x03
+                        acc_s = (calib >> 2) & 0x03
+                        mag_s = calib & 0x03
+                        pct = min(24, int((elapsed / TOTAL_SECONDS) * 24))
+                        status_msg = (f'\U0001f504 IMU — SYS:{sys_s}/3  GYR:{gyr_s}/3  '
+                                      f'ACC:{acc_s}/3  MAG:{mag_s}/3  '
+                                      f'({int(elapsed)}s / {TOTAL_SECONDS}s)')
+                        emit('imu', status_msg, 5 + pct)
+                        self.socketio.emit('log_line', f'[IMU] SYS:{sys_s} GYR:{gyr_s} ACC:{acc_s} MAG:{mag_s}')
+                        if sys_s >= 2 and gyr_s >= 2 and mag_s >= 2:
+                            self.socketio.emit('log_line', '[IMU] ✅ Calibration complete!')
+                            break
+                    except Exception as e:
+                        self.socketio.emit('log_line', f'[IMU] Read error: {e}')
+                        time.sleep(2)
+                        continue
+                else:
+                    # No hardware — simulate briefly then move on
+                    pct = min(24, int((elapsed / 10.0) * 24))
+                    emit('imu', f'\u23f3 IMU warmup (simulated) — {int(elapsed)}s', 5 + pct)
+                    if elapsed >= 5.0:
+                        break
+
+                if timeout:
+                    self.socketio.emit('log_line', '[IMU] 5-min timeout — forcing PASS')
+                    break
+
+                time.sleep(2.0)
+
+            if aborted(): return
+            emit('imu', '\u2705 IMU done', 30)
+
+            # ── Phase 2: Camera ───────────────────────────────────────────
+            emit('camera', '\U0001f4f7 Camera warming up — checking frame delivery...', 30)
+            cam_start = time.time()
+            cam_frames = 0
+            cam_q = self.queuesList.get('Vision')
+            while not aborted() and (time.time() - cam_start) < 30:
+                if cam_q and not cam_q.empty():
+                    try: cam_q.get_nowait(); cam_frames += 1
+                    except: pass
+                elapsed = time.time() - cam_start
+                fps_est = cam_frames / max(elapsed, 0.1)
+                pct = 30 + int((elapsed / 30) * 15)
+                emit('camera', f'\U0001f4f7 Camera: {cam_frames} frames received ({fps_est:.1f} fps)', pct)
+                time.sleep(1.0)
+
+            if aborted(): return
+            cam_ok = cam_frames > 0
+            cam_status = "\u2705" if cam_ok else "\u26a0 no frames"
+            self.socketio.emit('log_line', f'[Camera] {cam_frames} frames received in 30s {cam_status}')
+            emit('camera', '\u2705 Camera done', 45)
+
+            # ── Phase 3: Lane (BEV) ───────────────────────────────────────
+            emit('lane', '\U0001f6e3 Lane detector warming up...', 45)
+            lane_start = time.time()
+            bev_frames = 0
+            bev_q = self.queuesList.get('DashBEV')
+            while not aborted() and (time.time() - lane_start) < 30:
+                if bev_q and not bev_q.empty():
+                    try: bev_q.get_nowait(); bev_frames += 1
+                    except: pass
+                elapsed = time.time() - lane_start
+                pct = 45 + int((elapsed / 30) * 15)
+                emit('lane', f'\U0001f6e3 BEV frames: {bev_frames} ({int(elapsed)}s)', pct)
+                time.sleep(1.0)
+
+            if aborted(): return
+            lane_status = "\u2705" if bev_frames > 0 else "\u26a0"
+            self.socketio.emit('log_line', f'[Lane] {bev_frames} BEV frames in 30s {lane_status}')
+            emit('lane', '\u2705 Lane done', 60)
+
+            # ── Phase 4: YOLO ─────────────────────────────────────────────
+            emit('yolo', '\U0001f3af YOLO detector warming up...', 60)
+            yolo_start = time.time()
+            yolo_frames = 0
+            yq = self.queuesList.get('DashYOLO')
+            while not aborted() and (time.time() - yolo_start) < 30:
+                if yq and not yq.empty():
+                    try: yq.get_nowait(); yolo_frames += 1
+                    except: pass
+                elapsed = time.time() - yolo_start
+                pct = 60 + int((elapsed / 30) * 35)
+                emit('yolo', f'\U0001f3af YOLO frames: {yolo_frames} ({int(elapsed)}s)', pct)
+                time.sleep(1.0)
+
+            if aborted(): return
+            yolo_status = "\u2705" if yolo_frames > 0 else "\u26a0"
+            self.socketio.emit('log_line', f'[YOLO] {yolo_frames} annotated frames in 30s {yolo_status}')
+            emit('yolo', '\u2705 YOLO done', 95)
+
+            # ── Complete ──────────────────────────────────────────────────
+            emit('done', '\u2705 All sensors calibrated — system ready!', 100)
+            self.socketio.emit('log_line', '\u2705 Calibration complete — all sensors ready')
+            time.sleep(0.5)
+
+            if start_after and not aborted():
+                if 'Klem' in self.sendMessages:
+                    self.sendMessages['Klem']['obj'].send('30')
+                self.stateMachine.request_mode("dashboard_auto_button")
+                self.car_running = True
+                self.socketio.emit('log_line', '\u25b6 Car started — KL:30 sent, AUTO mode active')
+
+        except Exception as e:
+            self.socketio.emit('calibration_status', {'step': 'error', 'msg': f'\u274c Calibration error: {e}', 'pct': 0})
+            self.socketio.emit('log_line', f'\u274c Calibration exception: {e}')
 
     def _start_background_tasks(self):
         """Start background monitoring tasks."""

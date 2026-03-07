@@ -110,7 +110,25 @@ class processAutonomous(WorkerProcess):
         super(processAutonomous, self).__init__(self.queuesList, ready_event)
 
     def _init_threads(self):
-        pass
+        """
+        Called by WorkerProcess.run() INSIDE the child process after fork.
+        Re-create all threads here — threads started in __init__ (parent process)
+        are dead in the child after fork.
+        """
+        # Re-start the YOLO detector worker in this child process
+        if self.yolo_detector is not None:
+            self.yolo_detector.restart_worker()
+            self.logger.info("[Autonomous] YOLO worker restarted in child process")
+
+        # Re-start IMU in this child process
+        if self.imu is not None:
+            try:
+                self.imu = IMUSensor()
+                self.imu.start()
+                self.logger.info("[Autonomous] IMU restarted in child process")
+            except Exception as e:
+                self.logger.warning(f"[Autonomous] IMU restart failed: {e}")
+                self.imu = None
 
     def process_work(self):
         # 1. Grab raw numpy frame from the fast-path Vision queue
