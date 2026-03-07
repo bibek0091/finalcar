@@ -24,32 +24,35 @@ if os.path.exists(f2):
         with open(f2, "w") as f: f.write(code)
         print(f"Patched {f2}")
 
-# 3. Patch processAutonomous.py
+# 3. Patch processAutonomous.py (UNCONDITIONALLY DISABLE IMSHOW)
 f3 = "src/autonomous/threads/processAutonomous.py"
 if os.path.exists(f3):
     with open(f3, "r") as f: code = f.read()
-    if "os.environ.get('DISPLAY')" not in code:
-        code = code.replace('cv2.imshow("BFMC Semantic Brain", dbg_frame)\n            cv2.waitKey(1)',
-                            "if os.environ.get('DISPLAY'):\n                cv2.imshow(\"BFMC Semantic Brain\", dbg_frame)\n                cv2.waitKey(1)")
-        with open(f3, "w") as f: f.write(code)
-        print(f"Patched {f3}")
+    # Remove previous conditional if it exists
+    if "if os.environ.get('DISPLAY'):" in code:
+        code = code.replace("if os.environ.get('DISPLAY'):\n                cv2.imshow(\"BFMC Semantic Brain\", dbg_frame)\n                cv2.waitKey(1)", "pass # Headless mode enforced natively by patch")
+    # Comment entirely if original exists
+    code = code.replace('cv2.imshow("BFMC Semantic Brain", dbg_frame)\n            cv2.waitKey(1)',
+                        "pass # Headless mode enforced natively by patch")
+    with open(f3, "w") as f: f.write(code)
+    print(f"Patched {f3}")
 
-# 4. Patch main.py (Headless QT Bypass)
+# 4. Remove BAD Headless QT Bypass from main.py if present
 f4 = "main.py"
 if os.path.exists(f4):
     with open(f4, "r") as f: code = f.read()
-    if "QT_QPA_PLATFORM" not in code:
-        code = code.replace("import psutil", "import psutil\n\nos.environ[\"QT_QPA_PLATFORM\"] = \"offscreen\"")
+    if 'os.environ["QT_QPA_PLATFORM"] = "offscreen"' in code:
+        code = code.replace('os.environ["QT_QPA_PLATFORM"] = "offscreen"', '# removed qt_qpa to prevent plugin crash')
         with open(f4, "w") as f: f.write(code)
         print(f"Patched {f4}")
 
-# 5. Patch traffic_module.py (Headless QT Bypass)
+# 5. Remove BAD Headless QT Bypass from traffic_module.py if present
 f5 = "src/dashboard/traffic_module.py"
 if os.path.exists(f5):
     with open(f5, "r") as f: code = f.read()
-    if "QT_QPA_PLATFORM" not in code:
-        code = code.replace("try:\n    from ultralytics import YOLO", "import os\nos.environ[\"QT_QPA_PLATFORM\"] = \"offscreen\"\n\ntry:\n    from ultralytics import YOLO")
+    if 'os.environ["QT_QPA_PLATFORM"] = "offscreen"' in code:
+        code = code.replace('os.environ["QT_QPA_PLATFORM"] = "offscreen"', '# removed qt_qpa to prevent plugin crash')
         with open(f5, "w") as f: f.write(code)
         print(f"Patched {f5}")
 
-print("All Pi-side fixes successfully applied!")
+print("All Pi-side fixes successfully applied! OpenCV Headless enforced.")
