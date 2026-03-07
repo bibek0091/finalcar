@@ -1,3 +1,4 @@
+
 import sys
 import time
 import os
@@ -150,6 +151,15 @@ try:
     allProcesses.append(gateway_process)
 except Exception as e:
     logging.warning(f"Skipping Gateway: {e}")
+
+# 1b. Start the Dashboard (HTTP server on port 8000)
+try:
+    dashboard_ready = Event()
+    from src.dashboard.processDashboard import processDashboard
+    dashboard_process = processDashboard(queueList, logging, dashboard_ready, debugging=False)
+    allProcesses.append(dashboard_process)
+except Exception as e:
+    logging.warning(f"Skipping Dashboard: {e}")
 
 # 2. Start the Autonomous Process (The Brain)
 from src.autonomous.threads.processAutonomous import processAutonomous
