@@ -1,58 +1,112 @@
-import os
+"""
+apply_fixes.py — Run this on the Raspberry Pi after 'git pull'
+to patch files that Git submodules prevent from syncing.
 
-# 1. Patch threadSemaphores.py
-f1 = "src/data/Semaphores/threads/threadSemaphores.py"
-if os.path.exists(f1):
-    with open(f1, "r") as f: code = f.read()
+Usage:
+    cd ~/finalcar
+    python apply_fixes.py
+"""
+import os, re
+
+def patch_file(path, description, patch_fn):
+    if not os.path.exists(path):
+        print(f"  SKIP {path} (not found)")
+        return
+    with open(path, "r") as f:
+        original = f.read()
+    patched = patch_fn(original)
+    if patched != original:
+        with open(path, "w") as f:
+            f.write(patched)
+        print(f"  PATCHED {path} — {description}")
+    else:
+        print(f"  OK {path} — already patched")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. threadSemaphores: SO_REUSEADDR + self.sock = None on failure
+# ─────────────────────────────────────────────────────────────────────────────
+def patch_semaphores(code):
     if "SO_REUSEADDR" not in code:
-        code = code.replace("self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)",
-                            "self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n            if hasattr(socket, 'SO_REUSEPORT'): self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)")
-        code = code.replace("print(f\"[Semaphores] Failed to bind UDP: {e}\")",
-                            "print(f\"[Semaphores] Failed to bind UDP: {e}\")\n            self.sock = None")
-        with open(f1, "w") as f: f.write(code)
-        print(f"Patched {f1}")
+        code = code.replace(
+            "self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)",
+            "self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+            "            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+            "            if hasattr(socket, 'SO_REUSEPORT'):\n"
+            "                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)"
+        )
+    if "self.sock = None" not in code.split("Failed to bind")[1] if "Failed to bind" in code else "":
+        code = code.replace(
+            'print(f"[Semaphores] Failed to bind UDP: {e}")',
+            'print(f"[Semaphores] Failed to bind UDP: {e}")\n'
+            '            self.sock = None'
+        )
+    return code
 
-# 2. Patch threadTrafficCommunication.py
-f2 = "src/data/TrafficCommunication/threads/threadTrafficCommunication.py"
-if os.path.exists(f2):
-    with open(f2, "r") as f: code = f.read()
+patch_file("src/data/Semaphores/threads/threadSemaphores.py",
+           "SO_REUSEADDR + null socket on failure", patch_semaphores)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. threadTrafficCommunication: SO_REUSEADDR + self.sock = None on failure
+# ─────────────────────────────────────────────────────────────────────────────
+def patch_traffic(code):
     if "SO_REUSEADDR" not in code:
-        code = code.replace("self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)",
-                            "self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n            if hasattr(socket, 'SO_REUSEPORT'): self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)")
-        code = code.replace("print(f\"[TrafficComm] Failed to bind UDP: {e}\")",
-                            "print(f\"[TrafficComm] Failed to bind UDP: {e}\")\n            self.sock = None")
-        with open(f2, "w") as f: f.write(code)
-        print(f"Patched {f2}")
+        code = code.replace(
+            "self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)",
+            "self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+            "            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+            "            if hasattr(socket, 'SO_REUSEPORT'):\n"
+            "                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)"
+        )
+    if "self.sock = None" not in code.split("Failed to bind")[1] if "Failed to bind" in code else "":
+        code = code.replace(
+            'print(f"[TrafficComm] Failed to bind UDP: {e}")',
+            'print(f"[TrafficComm] Failed to bind UDP: {e}")\n'
+            '            self.sock = None'
+        )
+    return code
 
-# 3. Patch processAutonomous.py (UNCONDITIONALLY DISABLE IMSHOW)
-f3 = "src/autonomous/threads/processAutonomous.py"
-if os.path.exists(f3):
-    with open(f3, "r") as f: code = f.read()
-    # Remove previous conditional if it exists
-    if "if os.environ.get('DISPLAY'):" in code:
-        code = code.replace("if os.environ.get('DISPLAY'):\n                cv2.imshow(\"BFMC Semantic Brain\", dbg_frame)\n                cv2.waitKey(1)", "pass # Headless mode enforced natively by patch")
-    # Comment entirely if original exists
-    code = code.replace('cv2.imshow("BFMC Semantic Brain", dbg_frame)\n            cv2.waitKey(1)',
-                        "pass # Headless mode enforced natively by patch")
-    with open(f3, "w") as f: f.write(code)
-    print(f"Patched {f3}")
+patch_file("src/data/TrafficCommunication/threads/threadTrafficCommunication.py",
+           "SO_REUSEADDR + null socket on failure", patch_traffic)
 
-# 4. Remove BAD Headless QT Bypass from main.py if present
-f4 = "main.py"
-if os.path.exists(f4):
-    with open(f4, "r") as f: code = f.read()
-    if 'os.environ["QT_QPA_PLATFORM"] = "offscreen"' in code:
-        code = code.replace('os.environ["QT_QPA_PLATFORM"] = "offscreen"', '# removed qt_qpa to prevent plugin crash')
-        with open(f4, "w") as f: f.write(code)
-        print(f"Patched {f4}")
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. processAutonomous: strip ALL cv2.imshow / cv2.waitKey lines
+# ─────────────────────────────────────────────────────────────────────────────
+def patch_autonomous(code):
+    lines = code.split("\n")
+    new_lines = []
+    skip_block = False
+    for line in lines:
+        stripped = line.strip()
+        # Remove any line that calls cv2.imshow or cv2.waitKey
+        if "cv2.imshow" in stripped or "cv2.waitKey" in stripped:
+            continue
+        new_lines.append(line)
+    result = "\n".join(new_lines)
+    # Remove bad QT_QPA_PLATFORM if present
+    result = result.replace('os.environ["QT_QPA_PLATFORM"] = "offscreen"', "")
+    return result
 
-# 5. Remove BAD Headless QT Bypass from traffic_module.py if present
-f5 = "src/dashboard/traffic_module.py"
-if os.path.exists(f5):
-    with open(f5, "r") as f: code = f.read()
-    if 'os.environ["QT_QPA_PLATFORM"] = "offscreen"' in code:
-        code = code.replace('os.environ["QT_QPA_PLATFORM"] = "offscreen"', '# removed qt_qpa to prevent plugin crash')
-        with open(f5, "w") as f: f.write(code)
-        print(f"Patched {f5}")
+patch_file("src/autonomous/threads/processAutonomous.py",
+           "removed all cv2.imshow/waitKey calls", patch_autonomous)
 
-print("All Pi-side fixes successfully applied! OpenCV Headless enforced.")
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. main.py: remove bad QT_QPA_PLATFORM override if present
+# ─────────────────────────────────────────────────────────────────────────────
+def patch_main(code):
+    code = code.replace('os.environ["QT_QPA_PLATFORM"] = "offscreen"', "# headless qt removed")
+    return code
+
+patch_file("main.py", "removed QT_QPA_PLATFORM override", patch_main)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. traffic_module.py: remove bad QT_QPA_PLATFORM override if present
+# ─────────────────────────────────────────────────────────────────────────────
+def patch_traffic_module(code):
+    code = code.replace('os.environ["QT_QPA_PLATFORM"] = "offscreen"', "# headless qt removed")
+    return code
+
+patch_file("src/dashboard/traffic_module.py", "removed QT_QPA_PLATFORM override", patch_traffic_module)
+
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n✅ All Pi-side fixes successfully applied!")
+print("   You can now run: python main.py")

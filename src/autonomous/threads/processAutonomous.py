@@ -156,16 +156,5 @@ class processAutonomous(WorkerProcess):
         self.speedSender.send(str(int(final_speed)))
         self.steerSender.send(str(int(final_steer)))
         
-        # 6. Optional: Render visualization window (Only if not headless)
-        try:
-            dbg_frame = annotate_bev(lane_result, control_output, t_res if self.traffic_engine else None, behav_out if self.behavior else None)
-            
-            # Prevent Fatal X11 C++ aborts on Headless Raspberry Pi
-            if os.environ.get('DISPLAY'):
-                cv2.imshow("BFMC Semantic Brain", dbg_frame)
-                cv2.waitKey(1)
-            else:
-                # Optionally write to disk for debugging or just pass
-                pass
-        except Exception as e:
-            pass
+        # 6. Visualization disabled for headless Raspberry Pi
+        # (No cv2.imshow — avoids Qt/X11 crashes on SSH sessions)
