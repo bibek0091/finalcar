@@ -111,7 +111,9 @@ class processDashboard(WorkerProcess):
         # Initialize message handling
         self._initialize_messages()
         self._setup_websocket_handlers()
-        self._start_background_tasks()
+        # NOTE: Background threads are started in run(), NOT here.
+        # __init__ runs in the parent process. run() runs in the child process.
+        # Threads started here would be lost after fork().
 
         super(processDashboard, self).__init__(self.queueList, ready_event)
 
@@ -280,6 +282,10 @@ class processDashboard(WorkerProcess):
         self.running = False
 
     def run(self):
+        # Start background threads HERE — in the child process
+        # (threads started in __init__ run in the parent process and get lost after fork)
+        self._start_background_tasks()
+
         if self.ready_event:
             self.ready_event.set()
         self.socketio.run(self.app, host='0.0.0.0', port=5005, allow_unsafe_werkzeug=True)

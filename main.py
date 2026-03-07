@@ -91,8 +91,8 @@ queueList = {
     "General": Queue(),
     "Config": Queue(),
     "Log": Queue(),
-    "Vision": Queue(),       # Custom: Used by our YOLO script
-    "Autonomous": Queue(),   # Custom: Used by our Brain script
+    "Vision": Queue(maxsize=2),       # Custom: Used by our YOLO script
+    "Autonomous": Queue(maxsize=2),   # Custom: Used by our Brain script
     "DashBEV": Queue(maxsize=2),      # Dashboard: BEV lane debug frames (base64)
     "DashYOLO": Queue(maxsize=2),     # Dashboard: YOLO annotated frames (base64)
     "DashDecision": Queue(maxsize=2), # Dashboard: Decision engine state (JSON)
