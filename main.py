@@ -1,13 +1,11 @@
-# ===================================== GENERAL IMPORTS ==================================
 import sys
 import time
 import os
 import psutil
+import queue
 
-# Automatically create the 'temp' directory if it's missing to prevent FileNotFoundError
+# Create temp dir
 os.makedirs("temp", exist_ok=True)
-
-# Pin to CPU cores 0–3 to maximize Raspberry Pi performance
 available_cores = list(range(psutil.cpu_count()))
 psutil.Process(os.getpid()).cpu_affinity(available_cores)
 
@@ -21,9 +19,7 @@ logging.basicConfig(level=logging.INFO)
 
 # ===================================== PROCESS IMPORTS ==================================
 from src.hardware.camera.processCamera import processCamera
-from src.hardware.serialhandler.processSerialHandler import processSerialHandler
 
-# BULLETPROOF LOADER: If folders are completely missing, don't crash.
 try:
     from src.data.Semaphores.processSemaphores import processSemaphores
 except ModuleNotFoundError:
@@ -49,23 +45,18 @@ from src.statemachine.systemMode import SystemMode
 
 # ===================================== SHUTDOWN PROCESS ====================================
 def shutdown_process(process, timeout=1):
-    """Helper function to gracefully shutdown a process."""
     process.join(timeout)
     if process.is_alive():
         print(f"The process {process} cannot normally stop, it's blocked somewhere! Terminate it!")
-        process.terminate()  # force terminate if it won't stop
-        process.join(timeout)  # give it a moment to terminate
+        process.terminate()  
+        process.join(timeout)
         if process.is_alive():
             print(f"The process {process} is still alive after terminate, killing it!")
-            process.kill()  # last resort
+            process.kill()  
     print(f"The process {process} stopped")
 
-# ===================================== PROCESS MANAGEMENT ==================================
 def manage_process_life(process_class, process_instance, process_args, enabled, allProcesses):
-    """Start or stop a process based on the enabled flag (Controlled by BFMC State Machine)."""
-    if process_class is None:
-        return None  # Fail gracefully if module is missing
-        
+    if process_class is None: return None
     if enabled:
         if process_instance is None:
             process_instance = process_class(*process_args)
@@ -78,128 +69,242 @@ def manage_process_life(process_class, process_instance, process_args, enabled, 
             process_instance = None
     return process_instance 
 
+# ===================================== TKINTER UI IMPORTS ==================================
+import tkinter as tk
+from PIL import Image, ImageTk
+import base64
+import numpy as np
+import cv2
+
+# Import map_engine and UI structure from the copied cleandash modules
+from map_engine import MapEngine
+from dashboard_ui import DashboardUI
+
+class BFMC_App:
+    """Mock Application Controller required by the DashboardUI from cleandash."""
+    def __init__(self, root, qList):
+        self.root = root
+        self.root.title("BFMC ADAS Command Center (Dual Dashboard)")
+        self.root.geometry("1400x850")
+        self.qList = qList
+        
+        # Load Dashboard GUI Components
+        self.ui = DashboardUI(self.root, self)
+        self.map_engine = MapEngine()
+        
+        # Status variables
+        self.car_x, self.car_y, self.car_yaw = 0.5, 0.5, 0.0
+        self.current_speed, self.current_steer = 0.0, 0.0
+        self.is_connected = True
+        self.mode = "DRIVE"
+        self.path = []
+        self.visited_path_nodes = set()
+        self.path_signs = []
+        
+        self.render_map()
+
+    def set_mode(self, m):
+        self.mode = m
+        self.ui.var_main_mode.set(m)
+        self.ui.log_event(f"Mode changed to: {m}")
+
+    def on_map_click(self, event):
+        canvas_x = self.ui.map_canvas.canvasx(event.x)
+        canvas_y = self.ui.map_canvas.canvasy(event.y)
+        mx, my = self.map_engine.to_meter(canvas_x, canvas_y)
+        
+        if self.mode == "DRIVE":
+            self.car_x, self.car_y = mx, my
+            self.render_map()
+
+    def render_map(self):
+        pil = self.map_engine.render_map(
+            self.car_x, self.car_y, self.car_yaw,
+            self.path, self.visited_path_nodes, self.path_signs,
+            True, None, None, None
+        )
+        self.tk_map = ImageTk.PhotoImage(pil)
+        self.ui.map_canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_map)
+        self.ui.map_canvas.config(scrollregion=self.ui.map_canvas.bbox(tk.ALL))
+
+    def update_dashboard_ui(self, telemetry_data):
+        self.ui.lbl_telemetry.config(
+            text=f"SPD: {telemetry_data['speed_pwm']:.0f} | STR: {telemetry_data['steer_angle']:.1f}° | ERR: {telemetry_data['lane_error']:+.1f}px"
+        )
+        self.ui.lbl_ai.config(text=f"AI: {telemetry_data['state']}")
+
+        if telemetry_data['yolo_b64']:
+            try:
+                img_data = base64.b64decode(telemetry_data['yolo_b64'])
+                np_arr = np.frombuffer(img_data, np.uint8)
+                img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if img is not None:
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    cw, ch = self.ui.cam_label.winfo_width(), self.ui.cam_label.winfo_height()
+                    im_pil = Image.fromarray(img).resize((cw if cw>20 else 440, ch if ch>20 else 330))
+                    imtk = ImageTk.PhotoImage(image=im_pil)
+                    self.ui.cam_label.imgtk = imtk
+                    self.ui.cam_label.configure(image=imtk)
+            except Exception as e: pass
+
+        if telemetry_data['bev_b64']:
+            try:
+                img_data = base64.b64decode(telemetry_data['bev_b64'])
+                np_arr = np.frombuffer(img_data, np.uint8)
+                img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if img is not None:
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    cw, ch = self.ui.bev_label.winfo_width(), self.ui.bev_label.winfo_height()
+                    im_pil = Image.fromarray(img).resize((cw if cw>20 else 440, ch if ch>20 else 330))
+                    imtk = ImageTk.PhotoImage(image=im_pil)
+                    self.ui.bev_label.imgtk = imtk
+                    self.ui.bev_label.configure(image=imtk)
+            except Exception as e: pass
+
+    # Stub commands referenced by dashboard_ui.py
+    def save_config(self): self.ui.log_event("Config Saved")
+    def load_config(self): self.ui.log_event("Config Loaded")
+    def toggle_connection(self): self.ui.log_event("Hardware connected internally via processAutonomous")
+    def toggle_auto_mode(self): self.ui.log_event("Switched Mode")
+    def toggle_adas_mode(self): self.ui.log_event("ADAS Toggled")
+    def clear_route(self): pass
+
+
 # ======================================== SETTING UP ====================================
-print(BigPrint.PLEASE_WAIT.value)
-allProcesses = list()
-allEvents = list()
 
-queueList = {
-    "Critical": Queue(),
-    "Warning": Queue(),
-    "General": Queue(),
-    "Config": Queue(),
-    "Log": Queue(),
-    "Vision": Queue(),       # Custom: Used by our YOLO script
-    "Autonomous": Queue()    # Custom: Used by our Brain script
-}
-logging = logging.getLogger()
+def main():
+    print(BigPrint.PLEASE_WAIT.value)
+    allProcesses = list()
+    allEvents = list()
 
-original_stdout = sys.stdout
-original_stderr = sys.stderr
+    queueList = {
+        "Critical": Queue(),
+        "Warning": Queue(),
+        "General": Queue(),
+        "Config": Queue(),
+        "Log": Queue(),
+        "Autonomous": Queue(),    
+        "TkinterTelemetry": Queue(maxsize=2),
+        "WebTelemetry": Queue(maxsize=2)
+    }
+    logger = logging.getLogger()
+    
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    queue_writer = QueueWriter(queueList["Log"])
+    sys.stdout = MultiWriter(original_stdout, queue_writer)
+    sys.stderr = MultiWriter(original_stderr, queue_writer)
 
-queue_writer = QueueWriter(queueList["Log"])
-sys.stdout = MultiWriter(original_stdout, queue_writer)
-sys.stderr = MultiWriter(original_stderr, queue_writer)
+    # ===================================== INITIALIZE STATE ==================================
+    stateChangeSubscriber = messageHandlerSubscriber(queueList, StateChange, "lastOnly", True)
+    StateMachine.initialize_shared_state(queueList)
 
-# ===================================== INITIALIZE ==================================
-stateChangeSubscriber = messageHandlerSubscriber(queueList, StateChange, "lastOnly", True)
-StateMachine.initialize_shared_state(queueList)
+    # ===================================== INITIALIZE HARDWARE & V2X =======================
+    camera_ready = Event()
+    processCamera_inst = processCamera(queueList, logger, camera_ready, debugging=False)
+    allProcesses.append(processCamera_inst)
+    allEvents.append(camera_ready)
 
-# ===================================== INITIALIZE HARDWARE & V2X =======================
+    semaphore_ready = Event()
+    if processSemaphores is not None:
+        processSemaphore_inst = processSemaphores(queueList, logger, semaphore_ready, debugging=False)
+        allProcesses.append(processSemaphore_inst)
+    else:
+        processSemaphore_inst = None
+        semaphore_ready.set()
+    allEvents.append(semaphore_ready)
 
-# Initializing camera
-camera_ready = Event()
-processCamera_inst = processCamera(queueList, logging, camera_ready, debugging=False)
-allProcesses.append(processCamera_inst)
-allEvents.append(camera_ready)
+    traffic_com_ready = Event()
+    if processTrafficCommunication is not None:
+        processTrafficCom_inst = processTrafficCommunication(queueList, logger, 3, traffic_com_ready, debugging=False)
+        allProcesses.append(processTrafficCom_inst)
+    else:
+        processTrafficCom_inst = None
+        traffic_com_ready.set()
+    allEvents.append(traffic_com_ready)
 
-# Initializing semaphores (UDP Traffic Lights)
-semaphore_ready = Event()
-if processSemaphores is not None:
-    processSemaphore_inst = processSemaphores(queueList, logging, semaphore_ready, debugging=False)
-    allProcesses.append(processSemaphore_inst)
-else:
-    processSemaphore_inst = None
-    semaphore_ready.set() # Fake ready to prevent deadlock
-allEvents.append(semaphore_ready)
+    # NOTE: SerialHandler is now initialized internally by the new processAutonomous
 
-# Initializing Traffic Communication (TCP LiveTraffic - The '3' is your Car ID)
-traffic_com_ready = Event()
-if processTrafficCommunication is not None:
-    processTrafficCom_inst = processTrafficCommunication(queueList, logging, 3, traffic_com_ready, debugging=False)
-    allProcesses.append(processTrafficCom_inst)
-else:
-    processTrafficCom_inst = None
-    traffic_com_ready.set() # Fake ready to prevent deadlock
-allEvents.append(traffic_com_ready)
+    # ===================================== INITIALIZE WEB GATEWAY =====================
+    try:
+        from src.gateway.processGateway import processGateway
+        gateway_process = processGateway(queueList, logger)
+        allProcesses.append(gateway_process)
+    except Exception as e:
+        logger.warning(f"Skipping Gateway: {e}")
 
-# Initializing serial connection NUCLEO -> PI
-serial_handler_ready = Event()
-processSerialHandler_inst = processSerialHandler(queueList, logging, serial_handler_ready, debugging=False)
-allProcesses.append(processSerialHandler_inst)
-allEvents.append(serial_handler_ready)
+    dashboard_ready = Event()
+    try:
+        from src.dashboard.processDashboard import processDashboard
+        dashboard_process = processDashboard(queueList, logger, dashboard_ready, debugging=False)
+        allProcesses.append(dashboard_process)
+        allEvents.append(dashboard_ready)
+    except Exception as e:
+        logger.warning(f"Skipping Dashboard Flask Server: {e}")
+        dashboard_ready.set() 
 
+    # ===================================== INITIALIZE NEW PROCESS_AUTONOMOUS ==========
+    from src.autonomous.threads.processAutonomous import processAutonomous
+    autonomous_process = processAutonomous(queueList, logger)
+    allProcesses.append(autonomous_process)
 
-# ===================================== INITIALIZE OUR CUSTOM STACK =====================
+    # Start all background processes
+    for process in allProcesses:
+        process.daemon = True
+        process.start()
 
-# 1. Start the Gateway (WebSockets for Telemetry to Dashboard)
-try:
-    from src.gateway.processGateway import processGateway
-    gateway_process = processGateway(queueList, logging)
-    allProcesses.append(gateway_process)
-except Exception as e:
-    logging.warning(f"Skipping Gateway: {e}")
-
-# 2. Start the Vision Process (YOLO)
-try:
-    from src.autonomous.threads.processVision import processVision
-    vision_process = processVision(queueList, logging)
-    allProcesses.append(vision_process)
-except Exception as e:
-    logging.warning(f"Skipping Vision: {e}")
-
-# 3. Start the Autonomous Process (The Brain)
-from src.autonomous.threads.processAutonomous import processAutonomous
-autonomous_process = processAutonomous(queueList, logging)
-allProcesses.append(autonomous_process)
-
-# Start all processes initially
-for process in allProcesses:
-    process.daemon = True
-    process.start()
-
-# ===================================== STAYING ALIVE ====================================
-
-blocker = Event()
-try:
-    # wait for all hardware events to be set (Camera, Serial, etc.)
+    # ===================================== TKINTER UI AND NON-BLOCKING POLLING =========
     for event in allEvents:
         event.wait()
 
-    # apply starting mode
     StateMachine.initialize_starting_mode()
 
-    time.sleep(10)
+    root = tk.Tk()
+    app = BFMC_App(root, queueList)
+
+    # Define the non-blocking polling function
+    def poll_queues():
+        # Declare all processes that can be killed/restarted as nonlocal so we modify the outer lists
+        nonlocal processSemaphore_inst, processTrafficCom_inst
+        
+        # 1. State Machine Polling
+        try:
+            message = stateChangeSubscriber.receive_nowait()
+            if message is not None:
+                modeDictSemaphore = SystemMode[message].value["semaphore"]["process"]
+                modeDictTrafficCom = SystemMode[message].value["traffic_com"]["process"]
+
+                processSemaphore_inst = manage_process_life(processSemaphores, processSemaphore_inst, [queueList, logger, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
+                processTrafficCom_inst = manage_process_life(processTrafficCommunication, processTrafficCom_inst, [queueList, logger, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
+        except: pass
+
+        # 2. Telemetry Polling for Tkinter Dashboard
+        telemetry_queue = queueList.get("TkinterTelemetry")
+        try:
+            if not telemetry_queue.empty():
+                telem_data = telemetry_queue.get_nowait()
+                app.update_dashboard_ui(telem_data)
+        except: pass
+
+        root.after(50, poll_queues)
+
+    # Start the scheduling loop
+    root.after(100, poll_queues)
+
     print(BigPrint.C4_BOMB.value)
-    print(BigPrint.PRESS_CTRL_C.value)
+    print("Dual-Dashboard UI Architecture Active. Close the main window to abort.")
+    
+    # Launch Main Thread UI Loop
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        print("\nKeyboardInterruption caught!")
 
-    while True:
-        message = stateChangeSubscriber.receive()
-        if message is not None:
-            modeDictSemaphore = SystemMode[message].value["semaphore"]["process"]
-            modeDictTrafficCom = SystemMode[message].value["traffic_com"]["process"]
-
-            processSemaphore_inst = manage_process_life(processSemaphores, processSemaphore_inst, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
-            processTrafficCom_inst = manage_process_life(processTrafficCommunication, processTrafficCom_inst, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
-
-        blocker.wait(0.1)
-
-except KeyboardInterrupt:
-    print("\nCatching a KeyboardInterruption exception! Shutdown all processes.\n")
-
+    print("\nShutting down all background processes...")
     for proc in reversed(allProcesses):
-        proc.stop()
-
-    # wait for all processes to finish before exiting
+        getattr(proc, 'stop', lambda: None)()
     for proc in reversed(allProcesses):
         shutdown_process(proc)
+
+if __name__ == "__main__":
+    main()
