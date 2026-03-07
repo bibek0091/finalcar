@@ -161,11 +161,14 @@ def main():
             
             # 4. Dispatch Hardware Commands
             if serial_handler.running:
+                # Allow semantic Engine absolute authority during Parking regardless of lanes
+                is_parking = behav_out and behav_out.maneuver == "PARKING"
+                
                 # Hardware failsafe logic: stop motors if dead reckoning 
                 if not imu.is_calibrated:
                     serial_handler.set_speed(0)
                     serial_handler.set_steering(0)
-                elif "DEAD_RECKONING" in lane_result.anchor and "0.00" in lane_result.anchor:
+                elif "DEAD_RECKONING" in lane_result.anchor and "0.00" in lane_result.anchor and not is_parking:
                     serial_handler.set_speed(0)
                     serial_handler.set_steering(0)
                     print("LOST LANES: Motors paused.")

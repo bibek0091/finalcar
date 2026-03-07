@@ -476,7 +476,7 @@ class BehaviorController:
 
         # ── Parking ──────────────────────────────────────────────────────
         parking_sign = any(k in active_lower
-                           for k in ("parking", "park-sign", "park_sign"))
+                           for k in ("parking", "park-sign", "park_sign", "car-park"))
         if parking_sign and not self.parking_fsm.active:
             self.parking_fsm.trigger(now)
 

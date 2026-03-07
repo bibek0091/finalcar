@@ -454,7 +454,6 @@ class TrafficDecisionEngine:
         self.tl_fsm     = TrafficLightStateMachine()
         self.col_pred   = CollisionPredictor()
         self.ped_xwalk  = PedestrianCrosswalkMonitor()
-        self.parking_fsm = ParkingStateMachine()
 
         # Zone tracking
         self._zone_mode = "CITY"   # "CITY" | "HIGHWAY"
@@ -605,19 +604,19 @@ class TrafficDecisionEngine:
                 continue   # done with this detection
 
             # ── APPROACH PRE-DECELERATION ───────────────────────────────────────
-            # Any sign detected at FAR range triggers gentle deceleration
+            # Any Actionable sign detected at FAR range triggers gentle deceleration
             # (0.85×) so the car has time to slow before the sign action zone.
-            # This is separate from sign-specific logic below.
-            is_sign = not ("car" in lbl_lower or "pedestrian" in lbl_lower
-                           or "person" in lbl_lower or "obstacle" in lbl_lower
-                           or "roadblock" in lbl_lower)
-            if is_sign and dist_cat == "FAR":
+            is_obstacle = any(k in lbl_lower for k in ("car", "pedestrian", "person", "obstacle", "roadblock"))
+            is_info_sign = any(k in lbl_lower for k in ("highway", "motorway", "priority", "right-of-way", "give-way", "one-way", "oneway"))
+            is_action_sign = not (is_obstacle or is_info_sign)
+            
+            if is_action_sign and dist_cat == "FAR":
                 commit(8, "SYS_APPROACH", f"APPROACHING {lbl}")
                 _nearest_sign_dist_m = min(_nearest_sign_dist_m, approx_m)
                 continue   # no further sign logic until APPROACH/HALT range
 
-            # Track distance for dashboard
-            if is_sign:
+            # Track distance ONLY for actionable signs that require deceleration
+            if is_action_sign:
                 _nearest_sign_dist_m = min(_nearest_sign_dist_m, approx_m)
 
             # Skip tiny detections for all non-light signs
@@ -645,7 +644,7 @@ class TrafficDecisionEngine:
 
             # ── Highway entry ─────────────────────────────────────────────────
             elif any(k in lbl_lower for k in ("highway-entry", "highway_entry",
-                                               "highway_start", "motorway-entry")):
+                                               "highway_start", "motorway-entry", "highway")):
                 self._zone_mode = "HIGHWAY"
                 commit(5, "SYS_GO", "HIGHWAY MODE ON")
 
@@ -684,7 +683,7 @@ class TrafficDecisionEngine:
             # ── Parking sign ──────────────────────────────────────────────────
             elif any(k in lbl_lower for k in ("parking", "park-sign", "park_sign",
                                                "car-park")):
-                self.parking_fsm.trigger(now)
+                pass # Handled deeply by BehaviorController Priority Mission 3
 
             # ── Pedestrian on Road (Universal Fallback) ───────────────────────
             elif lbl_lower in ("pedestrian", "person"):
@@ -715,15 +714,7 @@ class TrafficDecisionEngine:
         if "RED" in light_st:
             commit(1, "SYS_STOP", "RED LIGHT")
 
-        # ── Parking FSM ───────────────────────────────────────────────────────
-        park_state, park_speed_mult, park_steer = self.parking_fsm.update(
-            dets, frame, now
-        )
-        if park_state not in ("NONE", "DONE"):
-            if park_state == "WAIT":
-                commit(1, "SYS_STOP", "PARKING — IN SPOT")
-            else:
-                commit(2, "SYS_SLOW", f"PARKING — {park_state}")
+        # Parking is no longer managed by TrafficDecisionEngine, handled by BehaviorController.
 
         self.state  = p_state
         self.reason = p_res
@@ -739,17 +730,15 @@ class TrafficDecisionEngine:
         elif self.state == "SYS_LIMIT":
             mult = 0.75
 
-        # Parking FSM overrides multiplier
-        if park_state not in ("NONE", "DONE"):
-            mult = park_speed_mult
+        # Parking is no longer managed by TrafficDecisionEngine.
 
         return TrafficResult(
             state            = self.state,
             reason           = self.reason,
             speed_multiplier = mult,
             zone_mode        = self._zone_mode,
-            parking_state    = park_state,
-            steer_bias       = park_steer,
+            parking_state    = "NONE",
+            steer_bias       = 0.0,
             pedestrian_blocking = ped_blocking,
             light_status     = light_st,
             active_labels    = act_lbl,
