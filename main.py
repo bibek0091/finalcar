@@ -48,11 +48,11 @@ def shutdown_process(process, timeout=1):
     process.join(timeout)
     if process.is_alive():
         print(f"The process {process} cannot normally stop, it's blocked somewhere! Terminate it!")
-        process.terminate()  
+        process.terminate()
         process.join(timeout)
         if process.is_alive():
             print(f"The process {process} is still alive after terminate, killing it!")
-            process.kill()  
+            process.kill()
     print(f"The process {process} stopped")
 
 def manage_process_life(process_class, process_instance, process_args, enabled, allProcesses):
@@ -67,7 +67,7 @@ def manage_process_life(process_class, process_instance, process_args, enabled, 
             shutdown_process(process_instance)
             allProcesses.remove(process_instance)
             process_instance = None
-    return process_instance 
+    return process_instance
 
 # ===================================== TKINTER UI IMPORTS ==================================
 import tkinter as tk
@@ -76,22 +76,22 @@ import base64
 import numpy as np
 import cv2
 
-# Import map_engine and UI structure from the copied cleandash modules
+# Import map_engine and UI structure from the root-level modules
 from map_engine import MapEngine
 from dashboard_ui import DashboardUI
 
 class BFMC_App:
-    """Mock Application Controller required by the DashboardUI from cleandash."""
+    """Application Controller for the Python Tkinter Dashboard."""
     def __init__(self, root, qList):
         self.root = root
-        self.root.title("BFMC ADAS Command Center (Dual Dashboard)")
+        self.root.title("BFMC ADAS Command Center")
         self.root.geometry("1400x850")
         self.qList = qList
-        
+
         # Load Dashboard GUI Components
         self.ui = DashboardUI(self.root, self)
         self.map_engine = MapEngine()
-        
+
         # Status variables
         self.car_x, self.car_y, self.car_yaw = 0.5, 0.5, 0.0
         self.current_speed, self.current_steer = 0.0, 0.0
@@ -100,7 +100,7 @@ class BFMC_App:
         self.path = []
         self.visited_path_nodes = set()
         self.path_signs = []
-        
+
         self.render_map()
 
     def set_mode(self, m):
@@ -112,7 +112,7 @@ class BFMC_App:
         canvas_x = self.ui.map_canvas.canvasx(event.x)
         canvas_y = self.ui.map_canvas.canvasy(event.y)
         mx, my = self.map_engine.to_meter(canvas_x, canvas_y)
-        
+
         if self.mode == "DRIVE":
             self.car_x, self.car_y = mx, my
             self.render_map()
@@ -133,33 +133,37 @@ class BFMC_App:
         )
         self.ui.lbl_ai.config(text=f"AI: {telemetry_data['state']}")
 
-        if telemetry_data['yolo_b64']:
+        if telemetry_data.get('yolo_b64'):
             try:
                 img_data = base64.b64decode(telemetry_data['yolo_b64'])
                 np_arr = np.frombuffer(img_data, np.uint8)
                 img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
                 if img is not None:
                     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    cw, ch = self.ui.cam_label.winfo_width(), self.ui.cam_label.winfo_height()
-                    im_pil = Image.fromarray(img).resize((cw if cw>20 else 440, ch if ch>20 else 330))
+                    cw = self.ui.cam_label.winfo_width()
+                    ch = self.ui.cam_label.winfo_height()
+                    im_pil = Image.fromarray(img).resize((cw if cw > 20 else 440, ch if ch > 20 else 330))
                     imtk = ImageTk.PhotoImage(image=im_pil)
                     self.ui.cam_label.imgtk = imtk
                     self.ui.cam_label.configure(image=imtk)
-            except Exception as e: pass
+            except Exception as e:
+                logging.debug(f"[UI] YOLO frame decode error: {e}")
 
-        if telemetry_data['bev_b64']:
+        if telemetry_data.get('bev_b64'):
             try:
                 img_data = base64.b64decode(telemetry_data['bev_b64'])
                 np_arr = np.frombuffer(img_data, np.uint8)
                 img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
                 if img is not None:
                     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    cw, ch = self.ui.bev_label.winfo_width(), self.ui.bev_label.winfo_height()
-                    im_pil = Image.fromarray(img).resize((cw if cw>20 else 440, ch if ch>20 else 330))
+                    cw = self.ui.bev_label.winfo_width()
+                    ch = self.ui.bev_label.winfo_height()
+                    im_pil = Image.fromarray(img).resize((cw if cw > 20 else 440, ch if ch > 20 else 330))
                     imtk = ImageTk.PhotoImage(image=im_pil)
                     self.ui.bev_label.imgtk = imtk
                     self.ui.bev_label.configure(image=imtk)
-            except Exception as e: pass
+            except Exception as e:
+                logging.debug(f"[UI] BEV frame decode error: {e}")
 
     # Stub commands referenced by dashboard_ui.py
     def save_config(self): self.ui.log_event("Config Saved")
@@ -178,17 +182,16 @@ def main():
     allEvents = list()
 
     queueList = {
-        "Critical": Queue(),
-        "Warning": Queue(),
-        "General": Queue(),
-        "Config": Queue(),
-        "Log": Queue(),
-        "Autonomous": Queue(),    
+        "Critical":         Queue(),
+        "Warning":          Queue(),
+        "General":          Queue(),
+        "Config":           Queue(),
+        "Log":              Queue(),
+        "Autonomous":       Queue(),
         "TkinterTelemetry": Queue(maxsize=2),
-        "WebTelemetry": Queue(maxsize=2)
     }
     logger = logging.getLogger()
-    
+
     original_stdout = sys.stdout
     original_stderr = sys.stderr
     queue_writer = QueueWriter(queueList["Log"])
@@ -223,26 +226,7 @@ def main():
         traffic_com_ready.set()
     allEvents.append(traffic_com_ready)
 
-    # NOTE: SerialHandler is now initialized internally by the new processAutonomous
-
-    # ===================================== INITIALIZE WEB GATEWAY =====================
-    try:
-        from src.gateway.processGateway import processGateway
-        gateway_process = processGateway(queueList, logger)
-        allProcesses.append(gateway_process)
-    except Exception as e:
-        logger.warning(f"Skipping Gateway: {e}")
-
-    dashboard_ready = Event()
-    dashboard_ready.set()  # Set immediately because processDashboard doesn't track this
-    try:
-        from src.dashboard.processDashboard import processDashboard
-        dashboard_process = processDashboard(queueList, logger)
-        allProcesses.append(dashboard_process)
-    except Exception as e:
-        logger.warning(f"Skipping Dashboard Flask Server: {e}")
-
-    # ===================================== INITIALIZE NEW PROCESS_AUTONOMOUS ==========
+    # ===================================== INITIALIZE AUTONOMOUS ==========================
     from src.autonomous.threads.processAutonomous import processAutonomous
     autonomous_process = processAutonomous(queueList, logger)
     allProcesses.append(autonomous_process)
@@ -252,20 +236,19 @@ def main():
         process.daemon = True
         process.start()
 
-    # ===================================== TKINTER UI AND NON-BLOCKING POLLING =========
+    # ===================================== WAIT FOR HARDWARE READY ========================
     for event in allEvents:
         event.wait()
 
     StateMachine.initialize_starting_mode()
 
+    # ===================================== TKINTER UI =====================================
     root = tk.Tk()
     app = BFMC_App(root, queueList)
 
-    # Define the non-blocking polling function
     def poll_queues():
-        # Declare all processes that can be killed/restarted as nonlocal so we modify the outer lists
         nonlocal processSemaphore_inst, processTrafficCom_inst
-        
+
         # 1. State Machine Polling
         try:
             message = stateChangeSubscriber.receive_nowait()
@@ -273,17 +256,27 @@ def main():
                 modeDictSemaphore = SystemMode[message].value["semaphore"]["process"]
                 modeDictTrafficCom = SystemMode[message].value["traffic_com"]["process"]
 
-                processSemaphore_inst = manage_process_life(processSemaphores, processSemaphore_inst, [queueList, logger, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
-                processTrafficCom_inst = manage_process_life(processTrafficCommunication, processTrafficCom_inst, [queueList, logger, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
-        except: pass
+                processSemaphore_inst = manage_process_life(
+                    processSemaphores, processSemaphore_inst,
+                    [queueList, logger, semaphore_ready, False],
+                    modeDictSemaphore["enabled"], allProcesses
+                )
+                processTrafficCom_inst = manage_process_life(
+                    processTrafficCommunication, processTrafficCom_inst,
+                    [queueList, logger, 3, traffic_com_ready, False],
+                    modeDictTrafficCom["enabled"], allProcesses
+                )
+        except Exception as e:
+            logging.debug(f"[StateMachine] Poll error: {e}")
 
         # 2. Telemetry Polling for Tkinter Dashboard
         telemetry_queue = queueList.get("TkinterTelemetry")
         try:
-            if not telemetry_queue.empty():
+            if telemetry_queue is not None and not telemetry_queue.empty():
                 telem_data = telemetry_queue.get_nowait()
                 app.update_dashboard_ui(telem_data)
-        except: pass
+        except Exception as e:
+            logging.debug(f"[UI] Telemetry poll error: {e}")
 
         root.after(50, poll_queues)
 
@@ -291,8 +284,8 @@ def main():
     root.after(100, poll_queues)
 
     print(BigPrint.C4_BOMB.value)
-    print("Dual-Dashboard UI Architecture Active. Close the main window to abort.")
-    
+    print("Python Dashboard active. Close the window to stop the stack.")
+
     # Launch Main Thread UI Loop
     try:
         root.mainloop()
@@ -301,7 +294,10 @@ def main():
 
     print("\nShutting down all background processes...")
     for proc in reversed(allProcesses):
-        getattr(proc, 'stop', lambda: None)()
+        try:
+            proc.stop()
+        except Exception:
+            pass
     for proc in reversed(allProcesses):
         shutdown_process(proc)
 

@@ -21,6 +21,7 @@ class LaneResult:
     y_eval:            float = 320.0
     optical_yaw_rate:  float = 0.0
     optical_vel:       float = 0.0
+    lane_type:         str   = "UNKNOWN"  # e.g. 'SOLID', 'DASHED', 'UNKNOWN'
 
 class VisualOdometry:
     def __init__(self):
@@ -74,6 +75,7 @@ class LaneDetector:
         self.lost_frames = 0
         self.last_target_x = 320.0
         self._heading_ema = 0.0
+        self._target_ema = 320.0  # Initialised here (not lazily) to avoid fragile hasattr pattern
 
     def process(self, raw_frame, dt: float = 0.033, extra_offset_px=0.0,
                 nav_state="NORMAL", velocity_ms=0.0, last_steering=0.0,
@@ -118,14 +120,8 @@ class LaneDetector:
             y_eval, lw, extra_offset_px, nav_state, self.lost_frames,
             velocity_ms, last_steering, current_yaw
         )
-        if not hasattr(self, "_target_ema"):
-            self._target_ema = target_x
-        # Make EMA aggressive matching request earlier
-        delta = abs(target_x - self._target_ema)
-        alpha = 1.0 if delta > 5.0 else 0.8
-        self._target_ema = (1.0 - alpha) * self._target_ema + alpha * target_x
-        target_x = self._target_ema
-        
+
+        # Resolve None BEFORE applying EMA so lost_frames can increment correctly
         if target_x is None:
             self.lost_frames += 1
             self.tracker.dead_reckoner.accumulate(dt, current_yaw)
@@ -133,6 +129,12 @@ class LaneDetector:
         else:
             self.lost_frames = 0
             self.last_target_x = target_x
+
+        # Apply EMA smoothing (aggressive when large jump, gentle otherwise)
+        delta = abs(target_x - self._target_ema)
+        alpha = 1.0 if delta > 5.0 else 0.8
+        self._target_ema = (1.0 - alpha) * self._target_ema + alpha * target_x
+        target_x = self._target_ema
 
         curv = self.tracker.get_curvature(y_eval)
         conf = 1.0 if (sl is not None and sr is not None) else 0.5 if (sl is not None or sr is not None) else 0.0

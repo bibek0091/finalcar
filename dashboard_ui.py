@@ -3,6 +3,11 @@ import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
 from datetime import datetime
+import os as _os, sys as _sys
+# Ensure config.py is importable regardless of working directory
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 from config import *
 
 class DashboardUI:
@@ -199,8 +204,12 @@ class DashboardUI:
             name = SIGN_MAP.get(s_type, {"name": s_type})['name']
             status_text = s.get('status', "⏳ PENDING")
             row_id = self.tree.insert("", "end", values=(f"{emoji} {name}", f"Node {s['node']}", status_text))
-            if "🔴" in status_text or "🟢" in status_text: self.tree.item(row_id, tags=("live",))
-        self.tree.tag_configure("live", background="#440000", foreground="#ff5555")
+            if "🔴" in status_text:
+                self.tree.item(row_id, tags=("danger",))
+            elif "🟢" in status_text:
+                self.tree.item(row_id, tags=("success",))
+        self.tree.tag_configure("danger",  background="#440000", foreground="#ff5555")
+        self.tree.tag_configure("success", background="#004400", foreground="#55ff55")
 
     def update_indicator_dots(self, active_state_flags, adas_enabled, is_parking):
         for key, (c, dot) in self.indicators.items():

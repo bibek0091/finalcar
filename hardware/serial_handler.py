@@ -165,6 +165,13 @@ class STM32_SerialHandler:
         return self.send_command("speed", str(int(speed_mm_s)))
 
     def set_steering(self, angle_deg: float) -> bool:
+        """
+        Set steering angle.
+
+        The STM32 firmware expects the angle in tenths of a degree
+        (e.g. 12.5° → 125), so we multiply by 10 and truncate to int.
+        Valid range is ±45°.
+        """
         angle_deg = max(-45.0, min(45.0, angle_deg))
         self.status.steering_angle = angle_deg
         return self.send_command("steer", str(int(angle_deg * 10)))
