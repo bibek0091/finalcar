@@ -128,8 +128,9 @@ class threadCamera(ThreadWithStop):
                 self.video_writer.write(mainRequest) # type: ignore
 
             serialRequest = cv2.cvtColor(serialRequest, cv2.COLOR_YUV2BGR_I420) # type: ignore
+            mainRequest_BGR = cv2.cvtColor(mainRequest, cv2.COLOR_RGB2BGR) # Fix channel flip
 
-            _, mainEncodedImg = cv2.imencode(".jpg", mainRequest) # type: ignore
+            _, mainEncodedImg = cv2.imencode(".jpg", mainRequest_BGR) # type: ignore
             _, serialEncodedImg = cv2.imencode(".jpg", serialRequest) # type: ignore
 
             mainEncodedImageData = base64.b64encode(mainEncodedImg).decode("utf-8") # type: ignore
