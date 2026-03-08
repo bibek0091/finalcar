@@ -382,6 +382,12 @@ class BFMC_App:
             self.root.after(50, self.control_loop)
 
 
+    def save_config(self):
+        pass
+
+    def load_config(self):
+        pass
+
     def _on_key_press(self, e):
         if self.is_auto_mode or self.is_playing_back: return
         if e.keysym in self.keys: self.keys[e.keysym] = True
