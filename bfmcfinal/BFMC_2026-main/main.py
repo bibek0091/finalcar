@@ -388,6 +388,25 @@ class BFMC_App:
     def load_config(self):
         pass
 
+    def toggle_adas_mode(self):
+        self.adas_enabled = not self.adas_enabled
+        if not self.headless:
+            if self.adas_enabled:
+                self.ui.btn_adas.config(text="ADAS ASSIST: ON", bg="#9b59b6")
+                self.ui.log_event("✅ ADAS ASSIST enabled.", "SUCCESS")
+            else:
+                self.ui.btn_adas.config(text="ADAS ASSIST: OFF", bg="#444")
+                self.ui.log_event("⚠️ ADAS ASSIST DISABLED.", "WARN")
+
+    def clear_route(self):
+        self.start_node = None; self.end_node = None; self.pass_node = None; self.path = []
+        self.visited_path_nodes.clear()
+        if not self.headless:
+            for item in self.ui.tree.get_children():
+                self.ui.tree.delete(item)
+            self.render_map()
+            self.ui.log_event("🗑 Route & sign history cleared. Ready for new run.", "WARN")
+
     def _on_key_press(self, e):
         if self.is_auto_mode or self.is_playing_back: return
         if e.keysym in self.keys: self.keys[e.keysym] = True
@@ -417,9 +436,7 @@ if __name__ == "__main__":
 
     v2x_procs = []
     if not args.no_v2x:
-        v2x_procs = launch_v2x_servers()
-        # Give servers a second to bind ports
-        time.sleep(1.0)
+        pass # User manually runs the servers in separate terminals
 
     try:
         if args.headless:
