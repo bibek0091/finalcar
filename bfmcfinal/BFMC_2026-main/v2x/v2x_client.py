@@ -47,10 +47,13 @@ class V2XClient(threading.Thread):
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(2.0)
             self.sock.connect((self.host, self.port))
-            log.info(f"[V2X] Connected to server {self.host}:{self.port}")
+            print(f"[V2X] Connected to server {self.host}:{self.port}")
+            self._last_conn_error = False
             return True
         except Exception as e:
-            log.warning(f"[V2X] Connection failed: {e}")
+            if not getattr(self, '_last_conn_error', False):
+                print(f"[V2X] Server offline at {self.host}:{self.port}. Waiting for it to start...")
+                self._last_conn_error = True
             self.sock = None
             return False
 
@@ -61,7 +64,7 @@ class V2XClient(threading.Thread):
             data = json.dumps(msg_dict).encode()
             self.sock.sendall(data)
         except Exception as e:
-            log.warning(f"[V2X] Send failed: {e}, will reconnect")
+            print(f"[V2X] Send failed: {e}, will reconnect")
             try:
                 self.sock.close()
             except:
