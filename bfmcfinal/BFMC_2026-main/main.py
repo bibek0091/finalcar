@@ -429,6 +429,10 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         print("\n[SYS] Interrupted by user.")
+    except Exception as e:
+        import traceback
+        print("\n[SYS] FATAL ERROR:")
+        traceback.print_exc()
     finally:
         if not args.headless:
             try: app.on_close()
@@ -436,4 +440,3 @@ if __name__ == "__main__":
         print("\n[SYS] Cleaning up V2X servers...")
         for p in v2x_procs:
             p.terminate()
-        sys.exit(0)
