@@ -68,6 +68,7 @@ class HybridLaneTracker:
         self.right_stale = 0
         self.dead_reckoner = DeadReckoningNavigator()
         self.estimated_lane_width = 280.0
+        self.right_lost_frames = 0
 
     def update(self, warped_binary, map_hint: str = "STRAIGHT"):
         nz  = warped_binary.nonzero()
@@ -157,6 +158,7 @@ class HybridLaneTracker:
             return predicted_x + extra_offset_px, f"DEAD_RECKONING_{conf:.2f}"
 
         if has_right:
+            self.right_lost_frames = 0
             if has_left:
                 if lane_width_px >= self.WIDE_ROAD_PX:
                     base_x = (ev(sl) + ev(sr)) / 2.0 + self.RIGHT_LANE_BIAS_PX
@@ -168,8 +170,13 @@ class HybridLaneTracker:
                 base_x = ev(sr) - hw + self.RIGHT_LANE_BIAS_PX
                 anchor = "RL_FROM_EDGE"
         else:
-            base_x = ev(sl) + self.DIVIDER_FOLLOW_OFFSET_PX
-            anchor = "DIVIDER_FOLLOW"
+            self.right_lost_frames += 1
+            if self.right_lost_frames < 80: # ~4 seconds at 20 Hz
+                base_x = 320.0
+                anchor = "FORWARD_4S_RECALIB"
+            else:
+                base_x = ev(sl) + self.DIVIDER_FOLLOW_OFFSET_PX
+                anchor = "DIVIDER_FOLLOW"
 
         self.dead_reckoner.last_valid_target    = base_x
         self.dead_reckoner.last_valid_curvature = self.get_curvature(y_eval)

@@ -304,8 +304,28 @@ class BFMC_App:
                 self.ui.cam_label.configure(image=self.ui.cam_label.imgtk)
 
                 if hasattr(lane_result, 'lane_dbg'):
-                    bev = lane_result.lane_dbg.copy()
-                    bev = cv2.cvtColor(bev, cv2.COLOR_BGR2RGB)
+                    dbg = lane_result.lane_dbg.copy()
+
+                    # Add text info (matching tempfile behavior)
+                    cv2.putText(dbg, lane_result.anchor, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+                    cv2.putText(dbg, f"Target X: {lane_result.target_x:.1f}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                    cv2.putText(dbg, f"Lat Error: {lane_result.lateral_error_px:+.1f}px", (10, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
+                    
+                    steer_color = (100,255,100) if abs(self.current_steer)<15 else (100,100,255)
+                    cv2.putText(dbg, f"STEER: {self.current_steer:+.1f} deg", (420, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, steer_color, 2)
+                    cv2.putText(dbg, f"SPEED: {self.current_speed:.0f} PWM", (420, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 100), 2)
+                    
+                    if t_res is not None and behav_out is not None:
+                        cv2.putText(dbg, f"STATE: {behav_out.state}", (420, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+                        cv2.putText(dbg, f"ZONE: {behav_out.zone_mode}", (420, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 100, 255), 2)
+                        y_offset = 120
+                        if t_res.active_labels:
+                            cv2.putText(dbg, "YOLO Detections:", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                            for label in t_res.active_labels:
+                                cv2.putText(dbg, f"- {label}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+                                y_offset += 20
+
+                    bev = cv2.cvtColor(dbg, cv2.COLOR_BGR2RGB)
                     img_bev = Image.fromarray(bev).resize((440, 330))
                     self.ui.bev_label.imgtk = ImageTk.PhotoImage(image=img_bev)
                     self.ui.bev_label.configure(image=self.ui.bev_label.imgtk)
