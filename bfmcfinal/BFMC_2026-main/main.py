@@ -104,7 +104,7 @@ class BFMC_App:
         self.headless = args.headless
         
         if not self.headless:
-            self.root.title("BFMC 2026 ADAS Command Center")
+            self.root.title("TEAM OPTINX BFMC 2026")
             self.root.geometry("1400x850")
             self.root.minsize(1200, 700)
             self.root.configure(bg=THEME["bg"])
