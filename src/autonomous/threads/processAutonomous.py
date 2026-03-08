@@ -141,8 +141,8 @@ class processAutonomous(WorkerProcess):
 
         try:
             while True:
-                # 1. Poll V2X queues (non-blocking) ──────────────────────────
-                speed_recv = self.speedSubscriber.receive_nowait()
+                # 1. Poll V2X queues (non-blocking via internal poll()) ──────
+                speed_recv = self.speedSubscriber.receive()
                 if speed_recv is not None:
                     self._current_speed_mm_s = float(speed_recv)
                     try:
@@ -150,12 +150,12 @@ class processAutonomous(WorkerProcess):
                     except Exception:
                         pass
 
-                sem_recv = self.semaphoreSubscriber.receive_nowait()
+                sem_recv = self.semaphoreSubscriber.receive()
                 if sem_recv is not None:
                     self._semaphores_dict = dict(sem_recv)
 
                 # 2. Get camera frame ─────────────────────────────────────────
-                frame_data = self.cameraSubscriber.receive_nowait()
+                frame_data = self.cameraSubscriber.receive()
                 if frame_data is None or not isinstance(frame_data, str):
                     time.sleep(0.01)
                     continue
