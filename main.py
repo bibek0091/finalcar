@@ -129,41 +129,29 @@ class BFMC_App:
 
     def update_dashboard_ui(self, telemetry_data):
         self.ui.lbl_telemetry.config(
-            text=f"SPD: {telemetry_data['speed_pwm']:.0f} | STR: {telemetry_data['steer_angle']:.1f}° | ERR: {telemetry_data['lane_error']:+.1f}px"
+            text=f"SPD: {telemetry_data.get('speed_pwm', 0):.0f} | STR: {telemetry_data.get('steer_angle', 0):.1f}° | ERR: {telemetry_data.get('lane_error', 0):+.1f}px"
         )
-        self.ui.lbl_ai.config(text=f"AI: {telemetry_data['state']}")
+        self.ui.lbl_ai.config(text=f"AI: {telemetry_data.get('state', 'OFF')}")
 
-        if telemetry_data.get('yolo_b64'):
+        # Helper to decode and display base64 -> OpenCV -> PIL
+        def show_img_safe(b64_str, label_widget):
+            if not b64_str: return
             try:
-                img_data = base64.b64decode(telemetry_data['yolo_b64'])
+                img_data = base64.b64decode(b64_str)
                 np_arr = np.frombuffer(img_data, np.uint8)
                 img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
                 if img is not None:
-                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    cw = self.ui.cam_label.winfo_width()
-                    ch = self.ui.cam_label.winfo_height()
-                    im_pil = Image.fromarray(img).resize((cw if cw > 20 else 440, ch if ch > 20 else 330))
-                    imtk = ImageTk.PhotoImage(image=im_pil)
-                    self.ui.cam_label.imgtk = imtk
-                    self.ui.cam_label.configure(image=imtk)
+                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    cw, ch = label_widget.winfo_width(), label_widget.winfo_height()
+                    img_pil = Image.fromarray(img_rgb).resize((cw if cw > 20 else 440, ch if ch > 20 else 330))
+                    img_tk = ImageTk.PhotoImage(image=img_pil)
+                    label_widget.imgtk = img_tk  # Keep reference
+                    label_widget.configure(image=img_tk)
             except Exception as e:
-                logging.debug(f"[UI] YOLO frame decode error: {e}")
+                logging.debug(f"[UI] Frame decode error: {e}")
 
-        if telemetry_data.get('bev_b64'):
-            try:
-                img_data = base64.b64decode(telemetry_data['bev_b64'])
-                np_arr = np.frombuffer(img_data, np.uint8)
-                img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-                if img is not None:
-                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    cw = self.ui.bev_label.winfo_width()
-                    ch = self.ui.bev_label.winfo_height()
-                    im_pil = Image.fromarray(img).resize((cw if cw > 20 else 440, ch if ch > 20 else 330))
-                    imtk = ImageTk.PhotoImage(image=im_pil)
-                    self.ui.bev_label.imgtk = imtk
-                    self.ui.bev_label.configure(image=imtk)
-            except Exception as e:
-                logging.debug(f"[UI] BEV frame decode error: {e}")
+        show_img_safe(telemetry_data.get("yolo_b64", ""), self.ui.cam_label)
+        show_img_safe(telemetry_data.get("bev_b64", ""), self.ui.bev_label)
 
     # Stub commands referenced by dashboard_ui.py
     def save_config(self): self.ui.log_event("Config Saved")
